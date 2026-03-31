@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Support — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body class="light-page" data-page="support">
+  <div data-site-shell>
+    <main>
+      <section class="page-hero" id="support-top">
+        <div class="container support-grid">
+          <div class="stack reveal">
+            <div class="breadcrumb"><a href="index.html">Home</a> <i class="fa-solid fa-angle-right"></i> Support</div>
+            <span class="eyebrow">Customer support</span>
+            <h1>We're here to help with every aspect of your shipment.</h1>
+            <p class="page-subtitle">From tracking queries to returns — our support team is ready to assist.</p>
+            <form id="supportTrackForm" class="calculator-card form-card">
+              <div>
+                <label for="supportTrackInput">Quick track a shipment</label>
+                <input id="supportTrackInput" placeholder="Enter tracking code" autocomplete="off">
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit"><i class="fa-solid fa-magnifying-glass"></i>Track now</button>
+                <a class="btn btn-secondary" href="dashboard.html">My dashboard</a>
+              </div>
+              <div id="supportTrackResult"></div>
+            </form>
+          </div>
+          <article class="media-card reveal" style="min-height:500px; position:relative;">
+            <img src="premium-gallery-01.jpeg" alt="Support" loading="lazy">
+            <div class="media-caption"><strong>Premium support</strong><p>Dedicated customer care available around the clock.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container stack">
+          <div class="stack reveal center">
+            <span class="eyebrow">Frequently asked questions</span>
+            <h2 class="section-title">Common questions about VeloxShip.</h2>
+          </div>
+          <div class="faq-list">
+            <div class="faq-item">
+              <button class="faq-q" data-faq-toggle>
+                How do I get my tracking code?
+                <i class="fa-solid fa-angle-down"></i>
+              </button>
+              <div class="faq-answer hidden">
+                <p>Tracking codes are issued by our operations team when your shipment is registered. You will receive the code via email or directly from the sender. Once you have it, enter it on your dashboard or the tracking page.</p>
+              </div>
+            </div>
+            <div class="faq-item">
+              <button class="faq-q" data-faq-toggle>
+                What does "Paused" status mean?
+                <i class="fa-solid fa-angle-down"></i>
+              </button>
+              <div class="faq-answer hidden">
+                <p>A paused status means your shipment has temporarily stopped moving, typically due to customs inspection, weather delays, or operational holds. The reason will always be displayed on your dashboard.</p>
+              </div>
+            </div>
+            <div class="faq-item">
+              <button class="faq-q" data-faq-toggle>
+                How do I link a tracking code to my account?
+                <i class="fa-solid fa-angle-down"></i>
+              </button>
+              <div class="faq-answer hidden">
+                <p>Log in to your dashboard and use the "Confirm tracking code" form. Paste your VLX code and click confirm. Your shipment will immediately appear in your expected products list.</p>
+              </div>
+            </div>
+            <div class="faq-item">
+              <button class="faq-q" data-faq-toggle>
+                Can I track without an account?
+                <i class="fa-solid fa-angle-down"></i>
+              </button>
+              <div class="faq-answer hidden">
+                <p>Yes. Use the public tracking page to get shipment status, current location and ETA. For full movement history and dashboard features, create a free account.</p>
+              </div>
+            </div>
+            <div class="faq-item" id="pickup">
+              <button class="faq-q" data-faq-toggle>
+                How do I schedule a pickup?
+                <i class="fa-solid fa-angle-down"></i>
+              </button>
+              <div class="faq-answer hidden">
+                <p>Submit a shipping request through our Shipping page and select your preferred pickup date and time. Our team will confirm within 24 hours.</p>
+              </div>
+            </div>
+            <div class="faq-item" id="returns">
+              <button class="faq-q" data-faq-toggle>
+                How do I manage a return?
+                <i class="fa-solid fa-angle-down"></i>
+              </button>
+              <div class="faq-answer hidden">
+                <p>Returns are handled through our reverse logistics service. Contact support with your tracking code and reason for return. We will generate a return label and initiate the process within 1 business day.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-tight">
+        <div class="container page-grid">
+          <article class="feature-card reveal">
+            <div class="icon-pill"><i class="fa-solid fa-envelope"></i></div>
+            <h3>Email support</h3>
+            <p>Send us your query and we'll respond within 24 hours on business days.</p>
+            <p><strong>support@veloxship.com</strong></p>
+          </article>
+          <article class="feature-card reveal">
+            <div class="icon-pill"><i class="fa-solid fa-phone"></i></div>
+            <h3>Phone support</h3>
+            <p>Speak directly with a customer care representative.</p>
+            <p><strong>+1 (800) VELOX-01</strong></p>
+            <p class="muted">Mon–Fri, 8am–8pm EST</p>
+          </article>
+          <article class="feature-card reveal">
+            <div class="icon-pill"><i class="fa-solid fa-comment-dots"></i></div>
+            <h3>Live chat</h3>
+            <p>Chat with our support team in real time for urgent shipment queries.</p>
+            <a class="btn btn-primary btn-sm" href="dashboard.html">Open dashboard chat</a>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="shipmentModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div><h3>Shipment details</h3><p class="page-subtitle">Full event history and operational detail.</p></div>
+        <button class="icon-btn" data-close-shipment-modal><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="shipmentModalBody"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="public.js"></script>
+</body>
+</html>

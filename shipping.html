@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shipping — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body class="light-page" data-page="shipping">
+  <div data-site-shell>
+    <main>
+      <section class="page-hero">
+        <div class="container support-grid">
+          <div class="stack reveal">
+            <div class="breadcrumb"><a href="index.html">Home</a> <i class="fa-solid fa-angle-right"></i> Shipping</div>
+            <span class="eyebrow">Shipping services</span>
+            <h1>Premium shipping options for every cargo type and destination.</h1>
+            <p class="page-subtitle">From lightweight express parcels to heavy ocean freight, VeloxShip provides transparent pricing, reliable transit times and live tracking for every shipment.</p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="#create-shipment"><i class="fa-solid fa-paper-plane"></i>Request shipment</a>
+              <a class="btn btn-secondary" href="#rates"><i class="fa-solid fa-calculator"></i>View rates</a>
+            </div>
+          </div>
+          <article class="media-card reveal" style="min-height:500px; position:relative;">
+            <img src="trucks-primary.jpeg" alt="VeloxShip trucks" loading="lazy">
+            <div class="media-caption"><strong>Ground freight fleet</strong><p>Nationwide ground logistics with real-time GPS tracking.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="delivery">
+        <div class="container stack">
+          <div class="stack reveal center">
+            <span class="eyebrow">Delivery options</span>
+            <h2 class="section-title">Choose the right service for your cargo.</h2>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card reveal">
+              <div class="icon-pill"><i class="fa-solid fa-plane-departure"></i></div>
+              <h3>Express Air</h3>
+              <p>Priority air freight for time-sensitive shipments. 1–3 business days to most global destinations.</p>
+              <div class="card-tag">From $299</div>
+            </article>
+            <article class="feature-card reveal">
+              <div class="icon-pill"><i class="fa-solid fa-ship"></i></div>
+              <h3>Ocean Freight</h3>
+              <p>Cost-effective ocean freight for large volume shipments. Full and less-than-container options available.</p>
+              <div class="card-tag">From $450</div>
+            </article>
+            <article class="feature-card reveal">
+              <div class="icon-pill"><i class="fa-solid fa-truck-fast"></i></div>
+              <h3>Ground Express</h3>
+              <p>Fast ground delivery within domestic and regional lanes. Real-time tracking at every checkpoint.</p>
+              <div class="card-tag">From $89</div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-tight" id="rates">
+        <div class="container support-grid">
+          <div class="stack reveal">
+            <span class="eyebrow">Rate estimator</span>
+            <h2 class="section-title">Get an instant shipping estimate.</h2>
+            <p class="section-copy">Use our rate calculator to get an indicative quote based on weight, distance and service mode.</p>
+            <form id="rateCalcForm" class="calculator-card form-card">
+              <div class="form-grid">
+                <div>
+                  <label for="calcWeight">Weight (kg)</label>
+                  <input id="calcWeight" type="number" placeholder="10" min="0.1" step="0.1">
+                </div>
+                <div>
+                  <label for="calcMode">Service mode</label>
+                  <select id="calcMode">
+                    <option value="express">Express Air</option>
+                    <option value="freight">Ocean Freight</option>
+                    <option value="economy">Economy Ground</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div>
+                  <label for="calcDistance">Approx. distance (km)</label>
+                  <input id="calcDistance" type="number" placeholder="5000" min="0">
+                </div>
+                <div class="checkbox-wrap">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="calcInsurance"> Add cargo insurance (+$85)
+                  </label>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit"><i class="fa-solid fa-calculator"></i>Calculate rate</button>
+              </div>
+              <div id="calcResult"></div>
+            </form>
+          </div>
+          <article class="media-card reveal" style="min-height:480px; position:relative;">
+            <img src="scan-shipping.jpeg" alt="Shipping scan" loading="lazy">
+            <div class="media-caption"><strong>Precision handling</strong><p>Every shipment is carefully scanned, documented and tracked from origin to destination.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="freight">
+        <div class="container page-grid">
+          <article class="media-card reveal" style="min-height:400px; position:relative;">
+            <img src="cargo-ship.jpeg" alt="Ocean freight" loading="lazy">
+            <div class="media-caption"><strong>Ocean freight</strong><p>FCL and LCL options across major global shipping lanes.</p></div>
+          </article>
+          <article class="feature-card reveal" id="international">
+            <div class="icon-pill"><i class="fa-solid fa-globe"></i></div>
+            <h3>International shipping</h3>
+            <p>Cross-border shipping with full customs documentation support and clearance assistance.</p>
+            <ul class="card-list">
+              <li><i class="fa-solid fa-check"></i><span>Commercial invoice preparation</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Customs duty calculation and pre-clearance</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Dangerous goods compliance</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Multi-modal routing options</span></li>
+            </ul>
+          </article>
+          <article class="feature-card reveal" id="supplies">
+            <div class="icon-pill"><i class="fa-solid fa-boxes-stacked"></i></div>
+            <h3>Packing &amp; supplies</h3>
+            <p>Professional packing services and materials available for fragile, high-value and oversized items.</p>
+            <ul class="card-list">
+              <li><i class="fa-solid fa-check"></i><span>Custom crating for fragile items</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Climate-controlled packaging options</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Luxury item white-glove handling</span></li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="create-shipment">
+        <div class="container support-grid">
+          <div class="stack reveal">
+            <span class="eyebrow">Get started</span>
+            <h2 class="section-title">Submit a shipping request.</h2>
+            <p class="section-copy">Fill in your shipment details and our customer care team will prepare your quote and tracking information.</p>
+            <form id="shippingRequestForm" class="form-card calculator-card">
+              <div class="form-grid">
+                <div>
+                  <label for="requestName">Your name</label>
+                  <input id="requestName" required placeholder="Full name">
+                </div>
+                <div>
+                  <label for="requestEmail">Email</label>
+                  <input id="requestEmail" type="email" required placeholder="you@example.com">
+                </div>
+              </div>
+              <div>
+                <label for="requestProduct">Product description</label>
+                <input id="requestProduct" required placeholder="What are you shipping?">
+              </div>
+              <div>
+                <label for="requestDetails">Additional details</label>
+                <textarea id="requestDetails" rows="3" placeholder="Fragile, special handling, etc."></textarea>
+              </div>
+              <div class="form-grid">
+                <div>
+                  <label for="requestOrigin">Origin</label>
+                  <input id="requestOrigin" required placeholder="City, Country">
+                </div>
+                <div>
+                  <label for="requestDestination">Destination</label>
+                  <input id="requestDestination" required placeholder="City, Country">
+                </div>
+              </div>
+              <div>
+                <label for="requestWeight">Approx. weight (kg)</label>
+                <input id="requestWeight" type="number" placeholder="5" min="0.1" step="0.1">
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit"><i class="fa-solid fa-paper-plane"></i>Submit request</button>
+              </div>
+              <div id="shippingRequestAlert" class="alert info" style="margin-top:12px;display:none;"></div>
+            </form>
+          </div>
+          <article class="media-card reveal" style="min-height:500px; position:relative;">
+            <img src="worker-containers.jpeg" alt="Worker with containers" loading="lazy">
+            <div class="media-caption"><strong>Expert handling</strong><p>Every item handled with care by our trained logistics specialists.</p></div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="public.js"></script>
+</body>
+</html>

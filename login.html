@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body data-page="auth">
+  <div data-site-shell>
+    <main class="auth-shell">
+      <div class="container auth-layout">
+        <section class="auth-copy reveal">
+          <span class="eyebrow">Welcome back</span>
+          <h1>Sign in to manage or monitor shipments.</h1>
+          <p class="page-subtitle">Customers see expected products, tracking confirmation and live shipment movement. Use your registered credentials to access your dashboard.</p>
+          <div class="feature-card">
+            <div class="icon-pill"><i class="fa-solid fa-shield-halved"></i></div>
+            <h3>Secure access</h3>
+            <p>Your account is protected with secure credentials. All shipment data and personal information is kept private.</p>
+          </div>
+          <div class="auth-visual">
+            <img src="hero-aerial.jpeg" alt="VeloxShip logistics" loading="lazy">
+          </div>
+        </section>
+        <section class="auth-card reveal">
+          <div class="account-switch">
+            <strong>VeloxShip access</strong>
+            <a class="auth-link" href="signup.html">Need an account?</a>
+          </div>
+          <div class="stack" style="margin-top:18px;">
+            <div id="authAlert" class="alert info">Sign in with your registered credentials.</div>
+            <form id="loginForm" class="form-card">
+              <div>
+                <label for="loginEmail">Email address</label>
+                <input id="loginEmail" type="email" required placeholder="you@example.com" autocomplete="email">
+              </div>
+              <div>
+                <label for="loginPassword">Password</label>
+                <input id="loginPassword" type="password" required placeholder="Enter your password" autocomplete="current-password">
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary btn-block" type="submit"><i class="fa-solid fa-right-to-bracket"></i>Sign in</button>
+              </div>
+            </form>
+            <p class="auth-note">Don't have an account? <a href="signup.html">Create one free</a></p>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="auth.js"></script>
+</body>
+</html>

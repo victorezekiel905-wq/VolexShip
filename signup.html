@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create account — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body data-page="auth">
+  <div data-site-shell>
+    <main class="auth-shell">
+      <div class="container auth-layout">
+        <section class="auth-copy reveal">
+          <span class="eyebrow">Create your access</span>
+          <h1>Sign up and instantly unlock your shipment dashboard.</h1>
+          <p class="page-subtitle">Customers receive a personalized dashboard after sign-up. Confirm your tracking code and immediately start viewing ETA, location and movement history.</p>
+          <div class="feature-card">
+            <div class="icon-pill"><i class="fa-solid fa-user-plus"></i></div>
+            <h3>What you get after signup</h3>
+            <ul class="card-list">
+              <li><i class="fa-solid fa-check"></i><span>Personalized shipment dashboard</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Live ETA countdown and movement timeline</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Admin messages and updates on your dashboard</span></li>
+              <li><i class="fa-solid fa-check"></i><span>Pause notifications with reason transparency</span></li>
+            </ul>
+          </div>
+          <div class="auth-visual">
+            <img src="customer-delivery.jpeg" alt="Customer delivery" loading="lazy">
+          </div>
+        </section>
+        <section class="auth-card reveal">
+          <div class="account-switch">
+            <strong>VeloxShip onboarding</strong>
+            <a class="auth-link" href="login.html">Already registered?</a>
+          </div>
+          <div class="stack" style="margin-top:18px;">
+            <div id="authAlert" class="alert info">Create a customer account with your delivery details.</div>
+            <form id="signupForm" class="form-card">
+              <div>
+                <label for="signupName">Full name <span class="required">*</span></label>
+                <input id="signupName" required placeholder="Your full name" autocomplete="name">
+              </div>
+              <div>
+                <label for="signupEmail">Email address <span class="required">*</span></label>
+                <input id="signupEmail" type="email" required placeholder="you@example.com" autocomplete="email">
+              </div>
+              <div>
+                <label for="signupPhone">Phone number <span class="required">*</span></label>
+                <input id="signupPhone" type="tel" required placeholder="+1 555 123 4567" autocomplete="tel">
+              </div>
+              <div>
+                <label for="signupCompany">Company / recipient</label>
+                <input id="signupCompany" placeholder="Optional company name" autocomplete="organization">
+              </div>
+              <div>
+                <label for="signupAddress">Delivery address <span class="required">*</span></label>
+                <input id="signupAddress" required placeholder="Street, city, country" autocomplete="street-address">
+              </div>
+              <div>
+                <label for="signupPassword">Password <span class="required">*</span></label>
+                <input id="signupPassword" type="password" required minlength="6" placeholder="Minimum 6 characters" autocomplete="new-password">
+              </div>
+              <div>
+                <label for="signupConfirm">Confirm password <span class="required">*</span></label>
+                <input id="signupConfirm" type="password" required minlength="6" placeholder="Repeat password" autocomplete="new-password">
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary btn-block" type="submit"><i class="fa-solid fa-user-plus"></i>Create account</button>
+              </div>
+            </form>
+            <p class="auth-note">Already have an account? <a href="login.html">Sign in here</a></p>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="auth.js"></script>
+</body>
+</html>

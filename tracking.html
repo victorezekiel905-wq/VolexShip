@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tracking — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body class="light-page" data-page="tracking">
+  <div data-site-shell>
+    <main>
+      <section class="page-hero" id="track-now">
+        <div class="container support-grid">
+          <div class="stack reveal">
+            <div class="breadcrumb"><a href="index.html">Home</a> <i class="fa-solid fa-angle-right"></i> Tracking</div>
+            <span class="eyebrow">Shipment visibility</span>
+            <h1>Track product movement with time, date, current location and ETA.</h1>
+            <p class="page-subtitle">Verify a shipment publicly or view the same record in your authenticated dashboard after confirming the tracking code.</p>
+            <form id="pageTrackForm" class="calculator-card form-card">
+              <div>
+                <label for="pageTrackInput">Tracking code</label>
+                <input id="pageTrackInput" placeholder="Enter your VLX tracking code" autocomplete="off" />
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit"><i class="fa-solid fa-magnifying-glass"></i>Track shipment</button>
+                <a class="btn btn-secondary" href="dashboard.html"><i class="fa-solid fa-gauge"></i>My dashboard</a>
+              </div>
+              <div id="pageTrackResult"></div>
+            </form>
+          </div>
+          <article class="media-card reveal" style="min-height:560px; position:relative;">
+            <video autoplay muted loop playsinline poster="trucks-primary.jpeg">
+              <source src="https://videos.pexels.com/video-files/10451891/10451891-hd_1440_2560_30fps.mp4" type="video/mp4">
+            </video>
+            <div class="media-caption"><strong>Continuous movement storytelling</strong><p>Tracking presented as a premium operational narrative.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-tight" id="manage-delivery">
+        <div class="container page-grid">
+          <article class="feature-card reveal">
+            <div class="icon-pill"><i class="fa-solid fa-plane-departure"></i></div>
+            <h3>Takeoff to doorstep visibility</h3>
+            <p>See the exact departure time, current transit location and estimated arrival for every shipment you track.</p>
+          </article>
+          <article class="feature-card reveal">
+            <div class="icon-pill"><i class="fa-solid fa-user-lock"></i></div>
+            <h3>Protected operations control</h3>
+            <p>Operations updates stage, location, ETA and narrative notes while customers get instant visibility.</p>
+          </article>
+          <article class="feature-card reveal">
+            <div class="icon-pill"><i class="fa-solid fa-hourglass-half"></i></div>
+            <h3>Dynamic ETA countdown</h3>
+            <p>Live countdown pills, movement timeline and history events add the "always informed" feel expected from modern logistics.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-tight">
+        <div class="container stack">
+          <div class="stack reveal center">
+            <span class="eyebrow">How tracking works</span>
+            <h2 class="section-title">From warehouse to doorstep in four steps.</h2>
+          </div>
+          <div class="steps-grid">
+            <div class="step-card reveal">
+              <div class="step-number">01</div>
+              <h3>Shipment registered</h3>
+              <p>Operations creates your shipment and generates a unique VLX tracking code.</p>
+            </div>
+            <div class="step-card reveal">
+              <div class="step-number">02</div>
+              <h3>Code issued to you</h3>
+              <p>The tracking code is shared with you. Enter it on your dashboard or this page.</p>
+            </div>
+            <div class="step-card reveal">
+              <div class="step-number">03</div>
+              <h3>Live movement updates</h3>
+              <p>Operations updates your shipment location, status and ETA as it moves through transit.</p>
+            </div>
+            <div class="step-card reveal">
+              <div class="step-number">04</div>
+              <h3>Delivery confirmed</h3>
+              <p>Get final delivery confirmation with timestamp and location on your dashboard.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="shipmentModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div><h3>Shipment details</h3><p class="page-subtitle">Full event history and operational detail.</p></div>
+        <button class="icon-btn" data-close-shipment-modal><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="shipmentModalBody"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="public.js"></script>
+</body>
+</html>

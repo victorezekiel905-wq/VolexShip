@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control Tower — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body data-page="admin">
+  <div data-site-shell>
+    <main class="dashboard-shell">
+      <div class="container">
+
+        <!-- Header -->
+        <div class="dashboard-welcome admin-welcome reveal">
+          <div class="dashboard-identity">
+            <div class="avatar-lg admin-avatar"><i class="fa-solid fa-shield-halved"></i></div>
+            <div>
+              <h1 id="adminGreeting">Operations Workspace</h1>
+              <p id="adminDataMode">Loading…</p>
+            </div>
+          </div>
+          <div class="form-actions">
+            <a class="btn btn-secondary btn-sm" href="index.html"><i class="fa-solid fa-eye"></i>View site</a>
+            <button class="btn btn-primary btn-sm" onclick="logoutUser()"><i class="fa-solid fa-arrow-right-from-bracket"></i>Sign out</button>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <section class="stats-grid reveal">
+          <article class="metric"><strong id="adminShipments">0</strong><span><i class="fa-solid fa-boxes-stacked"></i> Total shipments</span></article>
+          <article class="metric"><strong id="adminCustomers">0</strong><span><i class="fa-solid fa-users"></i> Registered customers</span></article>
+          <article class="metric"><strong id="adminPaused">0</strong><span><i class="fa-solid fa-circle-pause"></i> Paused shipments</span></article>
+          <article class="metric"><strong id="adminDelivered">0</strong><span><i class="fa-solid fa-circle-check"></i> Delivered</span></article>
+          <article class="metric"><strong id="adminRequests">0</strong><span><i class="fa-solid fa-inbox"></i> New requests</span></article>
+          <article class="metric"><strong id="adminMessages">0</strong><span><i class="fa-solid fa-envelope"></i> Messages sent</span></article>
+        </section>
+
+        <div id="adminAlert" class="alert info reveal">Create shipments, generate tracking codes, update movement and manage customer visibility.</div>
+
+        <!-- Create shipment -->
+        <section class="section-tight" id="createShipmentSection">
+          <article class="dashboard-card reveal">
+            <div class="card-title-row">
+              <div>
+                <h3><i class="fa-solid fa-plus-circle"></i> Register shipment & generate tracking code</h3>
+                <p>All tracking codes are generated exclusively here. Fill in product and logistics details below.</p>
+              </div>
+            </div>
+            <form id="createShipmentForm" class="form-card">
+              <div class="form-grid">
+                <div>
+                  <label for="customerEmail">Customer account</label>
+                  <select id="customerEmail"></select>
+                </div>
+                <div>
+                  <label for="customerNameFallback">Customer name (fallback)</label>
+                  <input id="customerNameFallback" placeholder="Used when no account is selected">
+                </div>
+              </div>
+              <div class="form-grid">
+                <div>
+                  <label for="productName">Product name <span class="required">*</span></label>
+                  <input id="productName" required placeholder="e.g. Rolex watch consignment">
+                </div>
+                <div>
+                  <label for="productCategory">Category</label>
+                  <input id="productCategory" placeholder="e.g. Luxury valuables">
+                </div>
+              </div>
+              <div>
+                <label for="productDescription">Product description</label>
+                <textarea id="productDescription" placeholder="Detailed product description shown in tracking view" rows="2"></textarea>
+              </div>
+              <div class="form-grid-3">
+                <div>
+                  <label for="quantity">Quantity</label>
+                  <input id="quantity" type="number" value="1" min="1">
+                </div>
+                <div>
+                  <label for="valueUsd">Value (USD)</label>
+                  <input id="valueUsd" type="number" value="1200">
+                </div>
+                <div>
+                  <label for="weightKg">Weight (kg)</label>
+                  <input id="weightKg" type="number" value="5" min="0.1" step="0.1">
+                </div>
+                <div>
+                  <label for="priority">Priority</label>
+                  <select id="priority">
+                    <option>White-glove</option>
+                    <option selected>Priority</option>
+                    <option>Express</option>
+                    <option>Economy</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div>
+                  <label for="origin">Origin <span class="required">*</span></label>
+                  <input id="origin" required placeholder="Rotterdam, Netherlands">
+                </div>
+                <div>
+                  <label for="destination">Destination <span class="required">*</span></label>
+                  <input id="destination" required placeholder="Toronto, Canada">
+                </div>
+              </div>
+              <div class="form-grid-3">
+                <div>
+                  <label for="currentLocation">Current location <span class="required">*</span></label>
+                  <input id="currentLocation" required placeholder="Rotterdam hub">
+                </div>
+                <div>
+                  <label for="shippingMode">Shipping mode</label>
+                  <select id="shippingMode">
+                    <option>Priority Air + Ground</option>
+                    <option>Express</option>
+                    <option>Freight</option>
+                    <option>Economy</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="status">Initial status</label>
+                  <select id="status">
+                    <option value="processing">Processing</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="in_transit">In transit</option>
+                    <option value="customs">Customs review</option>
+                    <option value="out_for_delivery">Out for delivery</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div>
+                  <label for="departureTime">Departure / takeoff time</label>
+                  <input id="departureTime" type="datetime-local">
+                </div>
+                <div>
+                  <label for="estimatedArrival">Estimated arrival <span class="required">*</span></label>
+                  <input id="estimatedArrival" type="datetime-local" required>
+                </div>
+              </div>
+              <div>
+                <label for="adminNotes">Admin notes</label>
+                <input id="adminNotes" placeholder="Special handling, customs notes, internal memo">
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit">
+                  <i class="fa-solid fa-barcode"></i>Generate tracking code &amp; create shipment
+                </button>
+              </div>
+            </form>
+          </article>
+        </section>
+
+        <!-- Send message -->
+        <section class="section-tight">
+          <article class="dashboard-card reveal">
+            <div class="card-title-row">
+              <div>
+                <h3><i class="fa-solid fa-paper-plane"></i> Send message to customer(s)</h3>
+                <p>Messages appear on the customer's dashboard. You can target one user or broadcast to all.</p>
+              </div>
+            </div>
+            <form id="sendMessageForm" class="form-card">
+              <div class="form-grid">
+                <div>
+                  <label for="msgRecipient">Recipient</label>
+                  <select id="msgRecipient"></select>
+                </div>
+                <div>
+                  <label for="msgSubject">Subject</label>
+                  <input id="msgSubject" required placeholder="e.g. Your shipment has been dispatched">
+                </div>
+              </div>
+              <div>
+                <label for="msgBody">Message body</label>
+                <textarea id="msgBody" required rows="4" placeholder="Write your message here…"></textarea>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit"><i class="fa-solid fa-paper-plane"></i>Send message</button>
+              </div>
+            </form>
+          </article>
+        </section>
+
+        <!-- Messages log -->
+        <section class="section-tight">
+          <div class="card-title-row reveal">
+            <div>
+              <h3><i class="fa-solid fa-envelope-open-text"></i> Sent messages log</h3>
+              <p>All messages sent to customers.</p>
+            </div>
+          </div>
+          <div id="adminMessagesHost"></div>
+        </section>
+
+        <!-- All shipments -->
+        <section class="section-tight">
+          <div class="card-title-row reveal">
+            <div>
+              <h3><i class="fa-solid fa-table-list"></i> All shipments</h3>
+              <p>Update movement narrative, location and status from one table.</p>
+            </div>
+          </div>
+          <div id="shipmentTableHost"></div>
+        </section>
+
+        <!-- Registered users -->
+        <section class="section-tight">
+          <div class="card-title-row reveal">
+            <div>
+              <h3><i class="fa-solid fa-users"></i> Registered customers</h3>
+              <p>All customer accounts in the system.</p>
+            </div>
+          </div>
+          <div id="userTableHost"></div>
+        </section>
+
+        <!-- Shipping requests -->
+        <section class="section-tight">
+          <div class="card-title-row reveal">
+            <div>
+              <h3><i class="fa-solid fa-inbox"></i> Shipping requests</h3>
+              <p>Incoming customer shipment requests awaiting follow-up.</p>
+            </div>
+          </div>
+          <div id="requestTableHost"></div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- Edit shipment modal -->
+  <div class="modal" id="editModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div><h3>Update shipment</h3><p class="page-subtitle">Edit status, location, ETA and movement narrative.</p></div>
+        <button class="icon-btn" data-close-edit-modal><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="shipment-code" id="editShipmentCode"></div>
+      <form id="editShipmentForm" class="form-card" style="margin-top:20px;">
+        <div class="form-grid-3">
+          <div>
+            <label for="editStatus">Status</label>
+            <select id="editStatus">
+              <option value="processing">Processing</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="in_transit">In transit</option>
+              <option value="customs">Customs review</option>
+              <option value="out_for_delivery">Out for delivery</option>
+              <option value="delivered">Delivered</option>
+              <option value="paused">Paused</option>
+            </select>
+          </div>
+          <div>
+            <label for="editLocation">Current location</label>
+            <input id="editLocation" placeholder="e.g. Frankfurt hub">
+          </div>
+          <div>
+            <label for="editEta">Estimated arrival</label>
+            <input id="editEta" type="datetime-local">
+          </div>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label for="editDepartureTime">Departure / takeoff time</label>
+            <input id="editDepartureTime" type="datetime-local">
+          </div>
+          <div>
+            <label for="editPauseReason">Pause reason (shown to customer)</label>
+            <input id="editPauseReason" placeholder="e.g. Customs inspection in progress">
+          </div>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label for="editHistoryTitle">Movement event title</label>
+            <input id="editHistoryTitle" placeholder="e.g. Arrived at transit hub">
+          </div>
+          <div>
+            <label for="editHistoryDetail">Movement event detail</label>
+            <input id="editHistoryDetail" placeholder="Narrative shown in timeline">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk"></i>Save update</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

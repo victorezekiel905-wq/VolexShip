@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Dashboard — VeloxShip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png">
+</head>
+<body data-page="dashboard">
+  <div data-site-shell>
+    <main class="dashboard-shell">
+      <div class="container">
+
+        <!-- Welcome banner -->
+        <div class="dashboard-welcome reveal">
+          <div class="dashboard-identity">
+            <div class="avatar-lg"><i class="fa-solid fa-user"></i></div>
+            <div>
+              <h1 id="dashboardGreeting">Welcome back 👋</h1>
+              <p id="dashboardSubtitle">Customer dashboard</p>
+            </div>
+          </div>
+          <div class="form-actions dash-header-actions">
+            <a class="btn btn-secondary btn-sm" href="tracking.html"><i class="fa-solid fa-magnifying-glass-location"></i>Public tracking</a>
+            <button class="btn btn-primary btn-sm" onclick="logoutUser()"><i class="fa-solid fa-arrow-right-from-bracket"></i>Sign out</button>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <section class="stats-grid reveal">
+          <article class="metric">
+            <strong id="statTotal">0</strong>
+            <span><i class="fa-solid fa-boxes-stacked"></i> Expected products</span>
+          </article>
+          <article class="metric">
+            <strong id="statTransit">0</strong>
+            <span><i class="fa-solid fa-truck-fast"></i> Currently moving</span>
+          </article>
+          <article class="metric">
+            <strong id="statPaused">0</strong>
+            <span><i class="fa-solid fa-circle-pause"></i> Paused shipments</span>
+          </article>
+          <article class="metric">
+            <strong id="statDelivered">0</strong>
+            <span><i class="fa-solid fa-circle-check"></i> Delivered</span>
+          </article>
+        </section>
+
+        <!-- Profile + Claim tracking -->
+        <section class="dashboard-grid section-tight">
+          <div id="profileHost"></div>
+
+          <article class="dashboard-card reveal">
+            <div class="card-title-row">
+              <div>
+                <h3><i class="fa-solid fa-barcode"></i> Confirm tracking code</h3>
+                <p>Paste a tracking code issued by operations to link an incoming product to your dashboard.</p>
+              </div>
+            </div>
+            <form id="claimTrackForm" class="form-card">
+              <div>
+                <label for="claimTrackingCode">Tracking code</label>
+                <input id="claimTrackingCode" placeholder="VLX-2026-ABCDE" autocomplete="off" />
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit"><i class="fa-solid fa-link"></i>Confirm tracking</button>
+              </div>
+              <div id="claimAlert" class="alert info">
+                If operations already assigned this shipment to your email, it will appear automatically below.
+              </div>
+            </form>
+
+            <div class="stack" style="margin-top:16px;">
+              <div class="card-title-row">
+                <div>
+                  <h3><i class="fa-solid fa-magnifying-glass-location"></i> Track a product</h3>
+                  <p>Quickly check any shipment from inside your dashboard without leaving this page.</p>
+                </div>
+              </div>
+              <form id="dashboardTrackForm" class="form-card">
+                <div>
+                  <label for="dashboardTrackInput">Product tracking code</label>
+                  <input id="dashboardTrackInput" placeholder="Enter tracking code" autocomplete="off" />
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-secondary" type="submit"><i class="fa-solid fa-magnifying-glass"></i>Track product</button>
+                </div>
+                <div id="dashboardTrackResult" class="stack"></div>
+              </form>
+            </div>
+          </article>
+        </section>
+
+        <!-- Messages from admin -->
+        <section class="section-tight">
+          <article class="dashboard-card reveal">
+            <div class="card-title-row">
+              <div>
+                <h3><i class="fa-solid fa-envelope"></i> Messages <span id="msgBadge" class="msg-count-badge"></span></h3>
+                <p>Important updates and notices from VeloxShip operations.</p>
+              </div>
+            </div>
+            <div id="messagesHost"></div>
+          </article>
+        </section>
+
+        <!-- Expected products -->
+        <section class="section-tight">
+          <div class="card-title-row reveal">
+            <div>
+              <h3><i class="fa-solid fa-boxes-stacked"></i> Expected products</h3>
+              <p>Assigned shipments and manually confirmed tracking codes.</p>
+            </div>
+          </div>
+          <div id="expectedProducts" class="shipment-grid"></div>
+        </section>
+
+        <!-- Recent movement feed -->
+        <section class="section-tight">
+          <article class="dashboard-card reveal">
+            <div class="card-title-row">
+              <div>
+                <h3><i class="fa-solid fa-route"></i> Recent movement feed</h3>
+                <p>Latest activity across all your shipments.</p>
+              </div>
+            </div>
+            <div id="recentTimeline" class="timeline"></div>
+          </article>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <div class="modal" id="shipmentModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div><h3>Shipment live view</h3><p class="page-subtitle">Current location, ETA and full movement history.</p></div>
+        <button class="icon-btn" data-close-shipment-modal><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="shipmentModalBody"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script src="layout.js"></script>
+  <script src="public.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
