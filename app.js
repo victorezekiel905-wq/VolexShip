@@ -96,7 +96,8 @@ const STAGES = [
   { key: 'customs',           label: 'Customs Review',    progress: 72 },
   { key: 'out_for_delivery',  label: 'Out for Delivery',  progress: 90 },
   { key: 'delivered',         label: 'Delivered',         progress: 100 },
-  { key: 'paused',            label: 'Paused',            progress: 55 }
+  { key: 'paused',            label: 'Paused',            progress: 55 },
+  { key: 'deleted',           label: 'Deleted',           progress: 100 }
 ];
 
 /* ── Helpers ── */
@@ -126,7 +127,7 @@ function getStatusMeta(status) {
   const stage = STAGES.find(s => s.key === status) || { label: status || 'Unknown', progress: 10 };
   const toneMap = {
     processing: 'info', confirmed: 'info', in_transit: 'warning',
-    customs: 'warning', out_for_delivery: 'info', delivered: 'success', paused: 'danger'
+    customs: 'warning', out_for_delivery: 'info', delivered: 'success', paused: 'danger', deleted: 'danger'
   };
   return { ...stage, tone: toneMap[status] || 'info' };
 }
@@ -158,7 +159,7 @@ function readSession() {
     const session = JSON.parse(localStorage.getItem(VS_SESSION_KEY));
     if (session) return session;
   } catch {}
-  if (localStorage.getItem('role') === 'admin') {
+  if (localStorage.getItem('role') === 'admin' || localStorage.getItem('isAdmin') === 'true') {
     return {
       id: 'admin_ops',
       email: ADMIN_EMAIL,
@@ -174,12 +175,18 @@ function setSession(user) {
     id: user.id, email: user.email, role: user.role,
     name: user.name, adminToken: user.adminToken || null
   }));
-  if (user?.role === 'admin') localStorage.setItem('role', 'admin');
-  else localStorage.removeItem('role');
+  if (user?.role === 'admin') {
+    localStorage.setItem('role', 'admin');
+    localStorage.setItem('isAdmin', 'true');
+  } else {
+    localStorage.removeItem('role');
+    localStorage.removeItem('isAdmin');
+  }
 }
 function clearSession() {
   localStorage.removeItem(VS_SESSION_KEY);
   localStorage.removeItem('role');
+  localStorage.removeItem('isAdmin');
 }
 
 function getAdminUser() {
@@ -281,6 +288,8 @@ function normalizeShipment(row) {
     trackingCode: row.trackingCode || row.tracking_code || meta.trackingCode || '',
     customerEmail: row.customerEmail || row.customer_email || row.email || meta.customerEmail || '',
     customerName: row.customerName || row.customer_name || row.full_name || meta.customerName || '',
+    phone: row.phone || meta.phone || '',
+    address: row.address || meta.address || '',
     productName: row.productName || row.product_name || row.shipment_title || meta.productName || 'Unnamed item',
     productCategory: row.productCategory || row.product_category || meta.productCategory || 'General cargo',
     productDescription: row.productDescription || row.product_description || meta.productDescription || '',
@@ -300,6 +309,8 @@ function normalizeShipment(row) {
     createdAt: row.createdAt || row.created_at || meta.createdAt || new Date().toISOString(),
     notes: row.notes || meta.notes || '',
     confirmedByCustomer: Boolean(row.confirmedByCustomer ?? row.confirmed_by_customer ?? meta.confirmedByCustomer),
+    deleted: Boolean(row.deleted ?? meta.deleted ?? ((row.status || row.Status || meta.status || '').toString().toLowerCase() === 'deleted')),
+    deletedAt: row.deleted_at || meta.deletedAt || null,
     history: Array.isArray(history) ? history : []
   };
 }
@@ -316,7 +327,7 @@ function mergeShipmentIntoCache(shipment) {
 
 /* ── Progress ── */
 function computeShipmentProgress(shipment) {
-  if (shipment.status === 'delivered') return 100;
+  if (shipment.status === 'delivered' || shipment.status === 'deleted') return 100;
   if (shipment.status === 'paused' && shipment.pausedProgress != null)
     return clamp(shipment.pausedProgress, 8, 96);
   const stageP = getStatusMeta(shipment.status).progress;
@@ -415,6 +426,7 @@ function shipmentCardMarkup(shipment, options = {}) {
             <div><label>ETA</label><strong class="eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</strong></div>
             <div><label>Priority</label><strong>${shipment.priority}</strong></div>
           </div>
+          ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
           ${paused ? `<div class="status-banner"><i class="fa-solid fa-circle-pause"></i><div><strong>Movement paused</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
           ${latest ? `<div class="timeline compact-timeline"><div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-body"><strong><span>${latest.title}</span><span>${formatDateTime(latest.time)}</span></strong><span>${latest.location} · ${latest.detail}</span></div></div></div>` : ''}
           ${actionMarkup}
@@ -485,6 +497,7 @@ function shipmentDetailMarkup(shipment) {
         <div><label>Shipping mode</label><strong>${shipment.shippingMode}</strong></div>
         <div><label>Created</label><strong>${formatDateTime(shipment.createdAt)}</strong></div>
       </div>
+      ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
       ${shipment.pausedReason ? `<div class="status-banner"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Delay notice</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
       <div class="stack"><h4 class="timeline-heading"><i class="fa-solid fa-route"></i> Delivery Movement Timeline</h4>
         <div class="timeline">${historyHtml}</div>

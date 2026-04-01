@@ -17,6 +17,7 @@ function headerMarkup(page, user) {
   const unread = user ? countUnreadMessages(user.email) : 0;
   const msgBadge = (unread > 0 && !isAdmin)
     ? `<span class="nav-badge">${unread}</span>` : '';
+  const dashActive = ['admin', 'dashboard'].includes(page) ? 'is-active' : '';
 
   return `
     <header class="site-header" id="siteHeader">
@@ -36,7 +37,7 @@ function headerMarkup(page, user) {
         </nav>
 
         <div class="nav-cta">
-          <a class="btn btn-secondary btn-sm nav-dash-btn" href="${dashHref}">
+          <a class="btn btn-secondary btn-sm nav-dash-btn ${dashActive}" href="${dashHref}">
             ${dashLabel}${msgBadge}
           </a>
           ${authBtn}
@@ -57,7 +58,7 @@ function headerMarkup(page, user) {
           <a href="support.html">Support</a>
           <hr class="mobile-sep">
           ${user
-            ? `<a href="${dashHref}">${dashLabel}${msgBadge}</a><button onclick="logoutUser()">Sign out</button>`
+            ? `<a href="${dashHref}" class="${dashActive}">${dashLabel}${msgBadge}</a><button onclick="logoutUser()">Sign out</button>`
             : `<a href="login.html">Sign in</a><a href="signup.html">Create account</a>`
           }
         </div>

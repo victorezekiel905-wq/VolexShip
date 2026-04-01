@@ -33,6 +33,7 @@
     if (lower === 'out for delivery' || lower === 'out_for_delivery') return 'out_for_delivery';
     if (lower === 'delivered') return 'delivered';
     if (lower === 'paused') return 'paused';
+    if (lower === 'deleted') return 'deleted';
     return lower.replace(/\s+/g, '_');
   }
 
@@ -95,6 +96,8 @@
       trackingCode: row.trackingCode || row.tracking_code || meta.trackingCode || '',
       customerEmail: row.customerEmail || row.customer_email || row.email || meta.customerEmail || '',
       customerName: row.customerName || row.customer_name || row.full_name || meta.customerName || '',
+      phone: row.phone || meta.phone || '',
+      address: row.address || meta.address || '',
       productName: row.productName || row.product_name || row.shipment_title || meta.productName || 'Unnamed item',
       productCategory: row.productCategory || row.product_category || meta.productCategory || 'General cargo',
       productDescription: row.productDescription || row.product_description || meta.productDescription || '',
@@ -114,6 +117,8 @@
       createdAt: row.createdAt || row.created_at || meta.createdAt || new Date().toISOString(),
       notes: row.notes || meta.notes || '',
       confirmedByCustomer: Boolean(row.confirmedByCustomer ?? row.confirmed_by_customer ?? meta.confirmedByCustomer),
+      deleted: Boolean(row.deleted ?? meta.deleted ?? (status === 'deleted')),
+      deletedAt: row.deleted_at || meta.deletedAt || null,
       history: Array.isArray(history) ? history : []
     };
   };
@@ -284,6 +289,12 @@
   };
   window.fetchShipmentByCode = fetchShipmentByCode;
 
+  function buildMovementMessage(shipment, history) {
+    if (shipment.status === 'deleted' || shipment.deleted) return 'Shipment has been deleted';
+    if (shipment.status === 'paused') return `Shipment paused: ${shipment.pausedReason || 'Movement paused by operations.'}`;
+    return history[0]?.detail || history[0]?.title || 'Shipment created';
+  }
+
   function shipmentRowFromPayload(shipment, dbStatus) {
     const history = Array.isArray(shipment.history) ? shipment.history : [];
     return {
@@ -304,6 +315,8 @@
         trackingCode: shipment.trackingCode,
         customerEmail: shipment.customerEmail || '',
         customerName: shipment.customerName || '',
+        phone: shipment.phone || '',
+        address: shipment.address || '',
         productName: shipment.productName || 'Unnamed item',
         productCategory: shipment.productCategory || 'General cargo',
         productDescription: shipment.productDescription || '',
@@ -323,7 +336,9 @@
         createdAt: shipment.createdAt || new Date().toISOString(),
         notes: shipment.notes || '',
         confirmedByCustomer: Boolean(shipment.confirmedByCustomer),
-        message: history[0]?.title || 'Shipment created',
+        deleted: Boolean(shipment.deleted || shipment.status === 'deleted'),
+        deletedAt: shipment.deletedAt || null,
+        message: buildMovementMessage(shipment, history),
         history
       }),
       estimated_delivery: shipment.estimatedArrival || null,
@@ -400,6 +415,10 @@
       next.pausedProgress = priorProgress;
       next.pausedReason = updates.pausedReason || next.pausedReason || 'Movement paused by operations.';
     }
+    if (updates.status === 'deleted') {
+      next.deleted = true;
+      next.deletedAt = next.deletedAt || new Date().toISOString();
+    }
     if (previousStatus === 'paused' && updates.status && updates.status !== 'paused') {
       next.pausedProgress = null;
       if (!updates.pausedReason) next.pausedReason = '';
@@ -411,13 +430,20 @@
     if (updates.departureTime === null || updates.departureTime === '') next.departureTime = null;
     if (updates.currentLocation) next.currentLocation = updates.currentLocation;
     if (updates.status) next.status = normalizeStatusValue(updates.status);
+    if (next.status !== 'deleted' && updates.status !== 'deleted') {
+      next.deleted = Boolean(next.deleted && next.status === 'deleted');
+    }
 
     if (updates.status && normalizeStatusValue(updates.status) !== previousStatus) {
       appendHistory(next, {
         status: next.status,
-        title: updates.historyTitle || `Status: ${getStatusMeta(next.status).label}`,
+        title: updates.historyTitle || (next.status === 'deleted' ? 'Shipment has been deleted' : next.status === 'paused' ? 'Shipment paused' : `Status: ${getStatusMeta(next.status).label}`),
         location: next.currentLocation || shipment.currentLocation,
-        detail: updates.historyDetail || (next.status === 'paused' ? (next.pausedReason || 'Movement paused by operations.') : 'Shipment updated by operations.')
+        detail: updates.historyDetail || (next.status === 'deleted'
+          ? 'Shipment has been deleted'
+          : next.status === 'paused'
+            ? `Shipment paused: ${next.pausedReason || 'Movement paused by operations.'}`
+            : 'Shipment updated by operations.')
       });
     } else if (updates.historyTitle || updates.historyDetail || updates.currentLocation) {
       appendHistory(next, {
@@ -450,11 +476,13 @@
   window.updateShipment = updateShipment;
 
   deleteShipment = async function(id) {
-    const client = await getBrowserClient();
-    const { error } = await client.from(TABLE).delete().eq('id', id);
-    if (error) throw error;
-    window.__veloxshipCache.shipments = getAllShipments().filter(item => String(item.id) !== String(id));
-    saveLocalShipments(window.__veloxshipCache.shipments);
+    return updateShipment(id, {
+      status: 'deleted',
+      deleted: true,
+      deletedAt: new Date().toISOString(),
+      historyTitle: 'Shipment has been deleted',
+      historyDetail: 'Shipment has been deleted'
+    });
   };
   window.deleteShipment = deleteShipment;
 

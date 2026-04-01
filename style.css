@@ -127,8 +127,12 @@ textarea { resize: vertical; min-height: 80px; }
 .mobile-nav-toggle { display: none; }
 .mobile-drawer {
   display: none;
-  background: var(--dark-2);
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-top: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.22);
   padding: 0;
   max-height: 0; overflow: hidden;
   transition: max-height .3s ease, padding .3s;
@@ -136,12 +140,14 @@ textarea { resize: vertical; min-height: 80px; }
 .mobile-drawer.active { max-height: 600px; padding: 16px 24px; }
 .mobile-links { display: flex; flex-direction: column; gap: 4px; }
 .mobile-links a, .mobile-links button {
-  color: rgba(255,255,255,.85); font-size: .9rem;
+  color: rgba(255,255,255,.96); font-size: .9rem;
   padding: 10px 12px; border-radius: 8px;
   background: none; border: none; text-align: left; cursor: pointer;
-  text-decoration: none; transition: background .2s;
+  text-decoration: none; transition: background .2s, color .2s;
+  text-shadow: 0 1px 10px rgba(15,23,42,.5);
 }
-.mobile-links a:hover, .mobile-links button:hover { background: rgba(255,255,255,.08); }
+.mobile-links a:hover, .mobile-links button:hover, .mobile-links a.is-active { background: rgba(255,255,255,.12); color: #fff; }
+.nav-dash-btn.is-active { background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.2); }
 .mobile-sep { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 8px 0; }
 
 @media (max-width: 900px) {
@@ -1199,3 +1205,15 @@ body.ambient-motion::after {
 .location-card h3     { color: var(--dark); }
 .location-card .location-flag i { color: var(--primary); }
 
+
+
+/* ── Minimal non-breaking fixes for requested admin/mobile updates ── */
+.hero .hero-stats .metric {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.hero .hero-stats .metric strong,
+.hero .hero-stats .metric span {
+  text-shadow: 0 1px 12px rgba(15,23,42,.45);
+}

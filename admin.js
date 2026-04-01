@@ -1,16 +1,69 @@
 /* VeloxShip — Admin Panel Logic */
-let adminUser          = null;
-let editingShipmentId  = null;
+let adminUser = null;
+let editingShipmentId = null;
+
+function getAdminVisibleShipments() {
+  return getAllShipments().filter(shipment => shipment.status !== 'deleted' && !shipment.deleted);
+}
+
+function setAdminAlert(message, tone = 'info') {
+  const alert = document.getElementById('adminAlert');
+  if (!alert) return;
+  alert.className = `alert ${tone}`;
+  alert.textContent = message;
+}
+
+function sendDashboardActionMessage(shipment, body, subject = 'Shipment update') {
+  if (!shipment?.customerEmail) return;
+  sendMessage({
+    to: shipment.customerEmail,
+    subject,
+    body
+  });
+}
+
+function ensureEditCustomerFields() {
+  const form = document.getElementById('editShipmentForm');
+  if (!form || form.querySelector('[data-customer-fields]')) return;
+  const historyGrid = form.querySelector('.form-grid:last-of-type');
+  if (!historyGrid) return;
+  historyGrid.insertAdjacentHTML('beforebegin', `
+    <div class="form-grid" data-customer-fields>
+      <div>
+        <label for="editCustomerName">Customer name</label>
+        <input id="editCustomerName" placeholder="Customer full name">
+      </div>
+      <div>
+        <label for="editCustomerEmail">Customer email</label>
+        <input id="editCustomerEmail" type="email" placeholder="customer@example.com">
+      </div>
+    </div>
+    <div class="form-grid" data-customer-fields>
+      <div>
+        <label for="editCustomerPhone">Customer phone</label>
+        <input id="editCustomerPhone" placeholder="Customer phone number">
+      </div>
+      <div>
+        <label for="editCustomerAddress">Customer address</label>
+        <input id="editCustomerAddress" placeholder="Customer delivery address">
+      </div>
+    </div>
+  `);
+}
 
 /* ── Stats ── */
 function renderAdminStats(shipments, users, requests) {
-  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('adminShipments', shipments.length);
+  const visibleShipments = shipments.filter(shipment => shipment.status !== 'deleted' && !shipment.deleted);
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  set('adminShipments', visibleShipments.length);
   set('adminCustomers', users.length);
-  set('adminPaused',    shipments.filter(s => s.status === 'paused').length);
-  set('adminDelivered', shipments.filter(s => s.status === 'delivered').length);
-  set('adminRequests',  requests.filter(r => r.status === 'new').length);
-  set('adminMessages',  getAllMessages().length);
+  set('adminPaused', visibleShipments.filter(shipment => shipment.status === 'paused').length);
+  set('adminDelivered', visibleShipments.filter(shipment => shipment.status === 'delivered').length);
+  set('adminRequests', requests.filter(request => request.status === 'new').length);
+  set('adminMessages', getAllMessages().length);
 }
 
 /* ── Customer dropdown ── */
@@ -19,14 +72,14 @@ function populateCustomerOptions() {
   if (!select) return;
   const users = getAllUsers();
   select.innerHTML = '<option value="">— Select customer account —</option>' +
-    users.map(u => `<option value="${u.email}">${u.name} · ${u.email}</option>`).join('');
+    users.map(user => `<option value="${user.email}">${user.name} · ${user.email}</option>`).join('');
 }
 
 /* ── Shipments table ── */
 function renderShipmentTable() {
   const host = document.getElementById('shipmentTableHost');
   if (!host) return;
-  const shipments = getAllShipments();
+  const shipments = getAdminVisibleShipments();
   if (!shipments.length) {
     host.innerHTML = '<div class="empty-state"><div class="icon-pill"><i class="fa-solid fa-box"></i></div><p>No shipments yet.</p></div>';
     return;
@@ -38,19 +91,20 @@ function renderShipmentTable() {
           <tr><th>Tracking</th><th>Customer</th><th>Product</th><th>Status</th><th>Location</th><th>ETA</th><th>Actions</th></tr>
         </thead>
         <tbody>
-          ${shipments.map(s => `
+          ${shipments.map(shipment => `
             <tr>
-              <td><code>${s.trackingCode}</code></td>
-              <td><span>${s.customerName || '—'}</span><br><small>${s.customerEmail || 'Unassigned'}</small></td>
-              <td>${s.productName}</td>
-              <td>${shipmentStatusBadge(s.status)}</td>
-              <td>${s.currentLocation || '—'}</td>
-              <td>${formatDateTime(s.estimatedArrival)}</td>
+              <td><code>${shipment.trackingCode}</code></td>
+              <td><span>${shipment.customerName || '—'}</span><br><small>${shipment.customerEmail || 'Unassigned'}</small></td>
+              <td>${shipment.productName}</td>
+              <td>${shipmentStatusBadge(shipment.status)}</td>
+              <td>${shipment.currentLocation || '—'}</td>
+              <td>${formatDateTime(shipment.estimatedArrival)}</td>
               <td>
                 <div class="table-actions">
-                  <button class="table-btn"        data-open-edit="${s.id}">Update</button>
-                  <button class="table-btn warn"   data-copy-code="${s.trackingCode}">Copy code</button>
-                  <button class="table-btn danger" data-delete-shipment="${s.id}">Delete</button>
+                  <button class="table-btn" data-open-edit="${shipment.id}">Update</button>
+                  <button class="table-btn warn" data-pause-shipment="${shipment.id}">Pause</button>
+                  <button class="table-btn warn" data-copy-code="${shipment.trackingCode}">Copy code</button>
+                  <button class="table-btn danger" data-delete-shipment="${shipment.id}">Delete</button>
                 </div>
               </td>
             </tr>`).join('')}
@@ -58,22 +112,77 @@ function renderShipmentTable() {
       </table>
     </div>`;
 
-  host.querySelectorAll('[data-open-edit]').forEach(btn =>
-    btn.addEventListener('click', () => openEditModal(btn.dataset.openEdit)));
+  host.querySelectorAll('[data-open-edit]').forEach(button => {
+    button.addEventListener('click', () => openEditModal(button.dataset.openEdit));
+  });
 
-  host.querySelectorAll('[data-copy-code]').forEach(btn =>
-    btn.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(btn.dataset.copyCode).catch(() => {});
-      showToast(`Copied: ${btn.dataset.copyCode}`, 'success');
-    }));
+  host.querySelectorAll('[data-pause-shipment]').forEach(button => {
+    button.addEventListener('click', () => handlePauseShipment(button.dataset.pauseShipment));
+  });
 
-  host.querySelectorAll('[data-delete-shipment]').forEach(btn =>
-    btn.addEventListener('click', async () => {
-      if (!confirm('Delete this shipment? This cannot be undone.')) return;
-      await deleteShipment(btn.dataset.deleteShipment);
-      showToast('Shipment removed.', 'info');
-      refreshAdmin();
-    }));
+  host.querySelectorAll('[data-copy-code]').forEach(button => {
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(button.dataset.copyCode).catch(() => {});
+      showToast(`Copied: ${button.dataset.copyCode}`, 'success');
+    });
+  });
+
+  host.querySelectorAll('[data-delete-shipment]').forEach(button => {
+    button.addEventListener('click', () => handleDeleteShipment(button.dataset.deleteShipment));
+  });
+}
+
+async function handlePauseShipment(id) {
+  const shipment = getAllShipments().find(item => String(item.id) === String(id));
+  if (!shipment) {
+    showToast('Shipment not found.', 'error');
+    return;
+  }
+  const reason = window.prompt('Enter pause reason', shipment.pausedReason || '');
+  if (reason === null) return;
+  const pauseReason = reason.trim();
+  if (!pauseReason) {
+    showToast('Pause reason is required.', 'warning');
+    return;
+  }
+  try {
+    const updated = await updateShipment(id, {
+      status: 'paused',
+      pausedReason: pauseReason,
+      historyTitle: 'Shipment paused',
+      historyDetail: `Shipment paused: ${pauseReason}`
+    });
+    sendDashboardActionMessage(updated, `Shipment paused: ${pauseReason}`, 'Shipment paused');
+    setAdminAlert('Shipment paused successfully.', 'success');
+    showToast('Shipment paused.', 'success');
+    refreshAdmin();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function handleDeleteShipment(id) {
+  const shipment = getAllShipments().find(item => String(item.id) === String(id));
+  if (!shipment) {
+    showToast('Shipment not found.', 'error');
+    return;
+  }
+  if (!window.confirm('Delete this shipment?')) return;
+  try {
+    const updated = await updateShipment(id, {
+      status: 'deleted',
+      deleted: true,
+      deletedAt: new Date().toISOString(),
+      historyTitle: 'Shipment has been deleted',
+      historyDetail: 'Shipment has been deleted'
+    });
+    sendDashboardActionMessage(updated, 'Shipment has been deleted', 'Shipment deleted');
+    setAdminAlert('Shipment deleted successfully.', 'success');
+    showToast('Shipment deleted.', 'info');
+    refreshAdmin();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
 }
 
 /* ── Users table ── */
@@ -90,14 +199,14 @@ function renderUserTable() {
       <table>
         <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>Registered</th><th>Shipments</th></tr></thead>
         <tbody>
-          ${users.map(u => {
-            const count = getAllShipments().filter(s => s.customerEmail === u.email).length;
+          ${users.map(user => {
+            const count = getAdminVisibleShipments().filter(shipment => shipment.customerEmail === user.email).length;
             return `<tr>
-              <td>${u.name}</td>
-              <td>${u.email}</td>
-              <td>${u.phone || '—'}</td>
-              <td>${u.address || '—'}</td>
-              <td>${formatDate(u.createdAt)}</td>
+              <td>${user.name}</td>
+              <td>${user.email}</td>
+              <td>${user.phone || '—'}</td>
+              <td>${user.address || '—'}</td>
+              <td>${formatDate(user.createdAt)}</td>
               <td>${count}</td>
             </tr>`;
           }).join('')}
@@ -120,17 +229,17 @@ function renderRequestTable() {
       <table>
         <thead><tr><th>Customer</th><th>Product</th><th>Weight</th><th>Route</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
-          ${requests.map(r => `
+          ${requests.map(request => `
             <tr>
-              <td>${r.customerName || '—'}<br><small>${r.customerEmail || ''}</small></td>
-              <td>${r.productName}<br><small>${r.productInfo || ''}</small></td>
-              <td>${r.weightKg} kg</td>
-              <td>${r.origin} → ${r.destination}</td>
-              <td>${shipmentStatusBadge(r.status === 'new' ? 'processing' : 'confirmed')}</td>
+              <td>${request.customerName || '—'}<br><small>${request.customerEmail || ''}</small></td>
+              <td>${request.productName}<br><small>${request.productInfo || ''}</small></td>
+              <td>${request.weightKg} kg</td>
+              <td>${request.origin} → ${request.destination}</td>
+              <td>${shipmentStatusBadge(request.status === 'new' ? 'processing' : 'confirmed')}</td>
               <td>
                 <div class="table-actions">
-                  <button class="table-btn"      data-use-request="${r.id}">Use</button>
-                  <button class="table-btn warn" data-mark-request="${r.id}">Mark contacted</button>
+                  <button class="table-btn" data-use-request="${request.id}">Use</button>
+                  <button class="table-btn warn" data-mark-request="${request.id}">Mark contacted</button>
                 </div>
               </td>
             </tr>`).join('')}
@@ -138,11 +247,11 @@ function renderRequestTable() {
       </table>
     </div>`;
 
-  host.querySelectorAll('[data-use-request]').forEach(btn =>
-    btn.addEventListener('click', () => useRequestInForm(btn.dataset.useRequest)));
-  host.querySelectorAll('[data-mark-request]').forEach(btn =>
-    btn.addEventListener('click', () => {
-      markRequestStatus(btn.dataset.markRequest, 'contacted');
+  host.querySelectorAll('[data-use-request]').forEach(button =>
+    button.addEventListener('click', () => useRequestInForm(button.dataset.useRequest)));
+  host.querySelectorAll('[data-mark-request]').forEach(button =>
+    button.addEventListener('click', () => {
+      markRequestStatus(button.dataset.markRequest, 'contacted');
       showToast('Marked as contacted.', 'success');
       refreshAdmin();
     }));
@@ -162,12 +271,12 @@ function renderAdminMessages() {
       <table>
         <thead><tr><th>To</th><th>Subject</th><th>Sent</th><th>Read by</th></tr></thead>
         <tbody>
-          ${messages.map(m => `
+          ${messages.map(message => `
             <tr>
-              <td>${m.to === 'all' ? '<span class="badge info">All users</span>' : m.to}</td>
-              <td>${m.subject}</td>
-              <td>${formatDateTime(m.createdAt)}</td>
-              <td>${m.readBy.length} user(s)</td>
+              <td>${message.to === 'all' ? '<span class="badge info">All users</span>' : message.to}</td>
+              <td>${message.subject}</td>
+              <td>${formatDateTime(message.createdAt)}</td>
+              <td>${message.readBy.length} user(s)</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -176,28 +285,31 @@ function renderAdminMessages() {
 
 /* ── Use request in form ── */
 function useRequestInForm(requestId) {
-  const r = getAllRequests().find(r => r.id === requestId);
-  if (!r) return;
-  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
-  set('customerEmail',        r.customerEmail);
-  set('customerNameFallback', r.customerName);
-  set('productName',          r.productName);
-  set('productCategory',      'Customer requested shipment');
-  set('weightKg',             r.weightKg);
-  set('origin',               r.origin);
-  set('destination',          r.destination);
-  set('adminNotes',           r.productInfo);
+  const request = getAllRequests().find(item => item.id === requestId);
+  if (!request) return;
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value || '';
+  };
+  set('customerEmail', request.customerEmail);
+  set('customerNameFallback', request.customerName);
+  set('productName', request.productName);
+  set('productCategory', 'Customer requested shipment');
+  set('weightKg', request.weightKg);
+  set('origin', request.origin);
+  set('destination', request.destination);
+  set('adminNotes', request.productInfo);
   document.getElementById('createShipmentSection')?.scrollIntoView({ behavior: 'smooth' });
   showToast('Request details loaded into shipment creator.', 'info');
 }
 
 /* ── Main refresh ── */
 function refreshAdmin() {
-  const users     = getAllUsers();
+  const users = getAllUsers();
   const shipments = getAllShipments();
-  const requests  = getAllRequests();
-  const el = document.getElementById('adminGreeting');
-  if (el) el.textContent = `Operations Workspace`;
+  const requests = getAllRequests();
+  const greeting = document.getElementById('adminGreeting');
+  if (greeting) greeting.textContent = 'Operations Workspace';
   const mode = document.getElementById('adminDataMode');
   if (mode) mode.textContent = getDataModeLabel();
   renderAdminStats(shipments, users, requests);
@@ -212,43 +324,42 @@ function refreshAdmin() {
 function installCreateShipmentForm() {
   const form = document.getElementById('createShipmentForm');
   if (!form) return;
-  form.addEventListener('submit', async e => {
-    e.preventDefault();
-    const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true; btn.textContent = 'Creating…';
-    const alert = document.getElementById('adminAlert');
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    button.textContent = 'Creating…';
     try {
-      const emailVal   = document.getElementById('customerEmail').value;
-      const matchedUser = getAllUsers().find(u => u.email === emailVal);
+      const emailValue = document.getElementById('customerEmail').value;
+      const matchedUser = getAllUsers().find(user => user.email === emailValue);
       const shipment = await createShipment({
-        customerEmail:      emailVal,
-        customerName:       matchedUser?.name || document.getElementById('customerNameFallback').value,
-        productName:        document.getElementById('productName').value,
-        productCategory:    document.getElementById('productCategory').value,
+        customerEmail: emailValue,
+        customerName: matchedUser?.name || document.getElementById('customerNameFallback').value,
+        productName: document.getElementById('productName').value,
+        productCategory: document.getElementById('productCategory').value,
         productDescription: document.getElementById('productDescription').value,
-        quantity:           document.getElementById('quantity').value,
-        weightKg:           document.getElementById('weightKg').value,
-        valueUsd:           document.getElementById('valueUsd').value,
-        origin:             document.getElementById('origin').value,
-        destination:        document.getElementById('destination').value,
-        currentLocation:    document.getElementById('currentLocation').value,
-        shippingMode:       document.getElementById('shippingMode').value,
-        priority:           document.getElementById('priority').value,
-        departureTime:      document.getElementById('departureTime').value || null,
-        estimatedArrival:   document.getElementById('estimatedArrival').value,
-        status:             document.getElementById('status').value,
-        notes:              document.getElementById('adminNotes').value
+        quantity: document.getElementById('quantity').value,
+        weightKg: document.getElementById('weightKg').value,
+        valueUsd: document.getElementById('valueUsd').value,
+        origin: document.getElementById('origin').value,
+        destination: document.getElementById('destination').value,
+        currentLocation: document.getElementById('currentLocation').value,
+        shippingMode: document.getElementById('shippingMode').value,
+        priority: document.getElementById('priority').value,
+        departureTime: document.getElementById('departureTime').value || null,
+        estimatedArrival: document.getElementById('estimatedArrival').value,
+        status: document.getElementById('status').value,
+        notes: document.getElementById('adminNotes').value
       });
-      alert.className   = 'alert success';
-      alert.innerHTML   = `<strong>Shipment created!</strong> Tracking code: <code>${shipment.trackingCode}</code>`;
+      setAdminAlert(`Shipment created successfully. Tracking code: ${shipment.trackingCode}`, 'success');
       form.reset();
       showToast(`Tracking code: ${shipment.trackingCode}`, 'success');
       refreshAdmin();
-    } catch (err) {
-      alert.className   = 'alert error';
-      alert.textContent = err.message;
+    } catch (error) {
+      setAdminAlert(error.message, 'error');
     } finally {
-      btn.disabled = false; btn.textContent = 'Generate tracking code & create shipment';
+      button.disabled = false;
+      button.textContent = 'Generate tracking code & create shipment';
     }
   });
 }
@@ -256,49 +367,83 @@ function installCreateShipmentForm() {
 /* ── Edit modal ── */
 function openEditModal(id) {
   editingShipmentId = id;
-  const s = getAllShipments().find(s => s.id === id);
-  if (!s) return;
-  const set = (elId, v) => { const el = document.getElementById(elId); if (el) el.value = v || ''; };
+  ensureEditCustomerFields();
+  const shipment = getAllShipments().find(item => String(item.id) === String(id));
+  if (!shipment) return;
+  const set = (elId, value) => {
+    const el = document.getElementById(elId);
+    if (el) el.value = value || '';
+  };
   const codeEl = document.getElementById('editShipmentCode');
-  if (codeEl) codeEl.textContent = s.trackingCode;
-  set('editStatus',       s.status);
-  set('editLocation',     s.currentLocation);
-  set('editEta',          s.estimatedArrival ? s.estimatedArrival.slice(0, 16) : '');
-  set('editDepartureTime',s.departureTime    ? s.departureTime.slice(0, 16)    : '');
-  set('editPauseReason',  s.pausedReason);
+  if (codeEl) codeEl.textContent = shipment.trackingCode;
+  set('editStatus', shipment.status);
+  set('editLocation', shipment.currentLocation);
+  set('editEta', shipment.estimatedArrival ? shipment.estimatedArrival.slice(0, 16) : '');
+  set('editDepartureTime', shipment.departureTime ? shipment.departureTime.slice(0, 16) : '');
+  set('editPauseReason', shipment.pausedReason);
+  set('editCustomerName', shipment.customerName);
+  set('editCustomerEmail', shipment.customerEmail);
+  set('editCustomerPhone', shipment.phone);
+  set('editCustomerAddress', shipment.address);
   set('editHistoryTitle', '');
-  set('editHistoryDetail','');
+  set('editHistoryDetail', '');
   document.getElementById('editModal')?.classList.add('active');
 }
 
 function installEditForm() {
   const form = document.getElementById('editShipmentForm');
   if (!form) return;
-  form.addEventListener('submit', async e => {
-    e.preventDefault();
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
     if (!editingShipmentId) return;
-    const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true; btn.textContent = 'Saving…';
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    button.textContent = 'Saving…';
     try {
       const status = document.getElementById('editStatus').value;
-      await updateShipment(editingShipmentId, {
+      const pauseReason = document.getElementById('editPauseReason').value.trim();
+      const payload = {
         status,
-        currentLocation:  document.getElementById('editLocation').value,
+        currentLocation: document.getElementById('editLocation').value,
         estimatedArrival: document.getElementById('editEta').value || null,
-        departureTime:    document.getElementById('editDepartureTime')?.value || null,
-        pausedReason:     document.getElementById('editPauseReason').value,
-        historyTitle:     document.getElementById('editHistoryTitle').value || undefined,
-        historyDetail:    document.getElementById('editHistoryDetail').value || undefined
-      });
+        departureTime: document.getElementById('editDepartureTime')?.value || null,
+        pausedReason: pauseReason,
+        customerName: document.getElementById('editCustomerName')?.value.trim() || '',
+        customerEmail: document.getElementById('editCustomerEmail')?.value.trim().toLowerCase() || '',
+        phone: document.getElementById('editCustomerPhone')?.value.trim() || '',
+        address: document.getElementById('editCustomerAddress')?.value.trim() || '',
+        historyTitle: document.getElementById('editHistoryTitle').value || undefined,
+        historyDetail: document.getElementById('editHistoryDetail').value || undefined
+      };
+
+      if (status === 'paused') {
+        if (!pauseReason) throw new Error('Pause reason is required when pausing a shipment.');
+        if (!payload.historyTitle) payload.historyTitle = 'Shipment paused';
+        if (!payload.historyDetail) payload.historyDetail = `Shipment paused: ${pauseReason}`;
+      }
+      if (status === 'deleted') {
+        payload.deleted = true;
+        payload.deletedAt = new Date().toISOString();
+        if (!payload.historyTitle) payload.historyTitle = 'Shipment has been deleted';
+        if (!payload.historyDetail) payload.historyDetail = 'Shipment has been deleted';
+      }
+
+      const updated = await updateShipment(editingShipmentId, payload);
+      if (status === 'paused') {
+        sendDashboardActionMessage(updated, `Shipment paused: ${pauseReason}`, 'Shipment paused');
+      }
+      if (status === 'deleted') {
+        sendDashboardActionMessage(updated, 'Shipment has been deleted', 'Shipment deleted');
+      }
       document.getElementById('editModal')?.classList.remove('active');
       showToast('Shipment updated.', 'success');
-      const alert = document.getElementById('adminAlert');
-      if (alert) { alert.className = 'alert success'; alert.textContent = 'Shipment updated successfully.'; }
+      setAdminAlert('Shipment updated successfully.', 'success');
       refreshAdmin();
-    } catch (err) {
-      showToast(err.message, 'error');
+    } catch (error) {
+      showToast(error.message, 'error');
     } finally {
-      btn.disabled = false; btn.textContent = 'Save update';
+      button.disabled = false;
+      button.textContent = 'Save update';
     }
   });
 }
@@ -307,36 +452,36 @@ function installEditForm() {
 function installMessageForm() {
   const form = document.getElementById('sendMessageForm');
   if (!form) return;
-  // Populate recipient select
-  const recipSelect = document.getElementById('msgRecipient');
-  if (recipSelect) {
+  const recipientSelect = document.getElementById('msgRecipient');
+  if (recipientSelect) {
     const users = getAllUsers();
-    recipSelect.innerHTML = '<option value="all">📢 All registered users</option>' +
-      users.map(u => `<option value="${u.email}">${u.name} · ${u.email}</option>`).join('');
+    recipientSelect.innerHTML = '<option value="all">📢 All registered users</option>' +
+      users.map(user => `<option value="${user.email}">${user.name} · ${user.email}</option>`).join('');
   }
 
-  form.addEventListener('submit', e => {
-    e.preventDefault();
-    const btn   = form.querySelector('button[type="submit"]');
-    btn.disabled = true;
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
     try {
       sendMessage({
-        to:      document.getElementById('msgRecipient').value,
+        to: document.getElementById('msgRecipient').value,
         subject: document.getElementById('msgSubject').value,
-        body:    document.getElementById('msgBody').value
+        body: document.getElementById('msgBody').value
       });
       showToast('Message sent.', 'success');
       form.reset();
-      // Re-populate recipient
       const users = getAllUsers();
-      const sel = document.getElementById('msgRecipient');
-      if (sel) sel.innerHTML = '<option value="all">📢 All registered users</option>' +
-        users.map(u => `<option value="${u.email}">${u.name} · ${u.email}</option>`).join('');
+      const select = document.getElementById('msgRecipient');
+      if (select) {
+        select.innerHTML = '<option value="all">📢 All registered users</option>' +
+          users.map(user => `<option value="${user.email}">${user.name} · ${user.email}</option>`).join('');
+      }
       refreshAdmin();
-    } catch (err) {
-      showToast(err.message, 'error');
+    } catch (error) {
+      showToast(error.message, 'error');
     } finally {
-      btn.disabled = false;
+      button.disabled = false;
     }
   });
 }
@@ -347,14 +492,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   adminUser = requireRole('admin');
   if (!adminUser) return;
 
+  localStorage.setItem('role', 'admin');
+  localStorage.setItem('isAdmin', 'true');
+
+  ensureEditCustomerFields();
   refreshAdmin();
   installCreateShipmentForm();
   installEditForm();
   installMessageForm();
 
-  document.querySelectorAll('[data-close-edit-modal]').forEach(btn =>
-    btn.addEventListener('click', () => document.getElementById('editModal')?.classList.remove('active')));
-  document.getElementById('editModal')?.addEventListener('click', e => {
-    if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
+  document.querySelectorAll('[data-close-edit-modal]').forEach(button =>
+    button.addEventListener('click', () => document.getElementById('editModal')?.classList.remove('active')));
+  document.getElementById('editModal')?.addEventListener('click', event => {
+    if (event.target === event.currentTarget) event.currentTarget.classList.remove('active');
   });
 });

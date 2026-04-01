@@ -162,9 +162,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshDashboard();
   installClaimForm(dashboardUser);
 
-  /* Poll for new messages every 15s */
-  setInterval(() => {
-    renderMessages(dashboardUser);
+  /* Poll for new messages and shipment updates every 15s */
+  setInterval(async () => {
+    await ensureShipmentsLoaded(true);
+    refreshDashboard();
   }, 15000);
 
   const modal = document.getElementById('shipmentModal');
