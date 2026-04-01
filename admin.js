@@ -2,6 +2,12 @@
 let adminUser = null;
 let editingShipmentId = null;
 
+function hasAdminPrivileges() {
+  return adminUser?.role === 'admin'
+    || localStorage.getItem('role') === 'admin'
+    || localStorage.getItem('isAdmin') === 'true';
+}
+
 function getAdminVisibleShipments() {
   return getAllShipments().filter(shipment => shipment.status !== 'deleted' && !shipment.deleted);
 }
@@ -133,6 +139,10 @@ function renderShipmentTable() {
 }
 
 async function handlePauseShipment(id) {
+  if (!hasAdminPrivileges()) {
+    showToast('Admin access required.', 'error');
+    return;
+  }
   const shipment = getAllShipments().find(item => String(item.id) === String(id));
   if (!shipment) {
     showToast('Shipment not found.', 'error');
@@ -162,6 +172,10 @@ async function handlePauseShipment(id) {
 }
 
 async function handleDeleteShipment(id) {
+  if (!hasAdminPrivileges()) {
+    showToast('Admin access required.', 'error');
+    return;
+  }
   const shipment = getAllShipments().find(item => String(item.id) === String(id));
   if (!shipment) {
     showToast('Shipment not found.', 'error');
@@ -326,6 +340,10 @@ function installCreateShipmentForm() {
   if (!form) return;
   form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (!hasAdminPrivileges()) {
+      showToast('Admin access required.', 'error');
+      return;
+    }
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
     button.textContent = 'Creating…';
@@ -395,6 +413,10 @@ function installEditForm() {
   if (!form) return;
   form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (!hasAdminPrivileges()) {
+      showToast('Admin access required.', 'error');
+      return;
+    }
     if (!editingShipmentId) return;
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
@@ -461,6 +483,10 @@ function installMessageForm() {
 
   form.addEventListener('submit', event => {
     event.preventDefault();
+    if (!hasAdminPrivileges()) {
+      showToast('Admin access required.', 'error');
+      return;
+    }
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
     try {

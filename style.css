@@ -75,6 +75,10 @@ textarea { resize: vertical; min-height: 80px; }
   height: var(--header-h);
   transition: box-shadow .3s;
 }
+.site-header,
+.site-header * {
+  -webkit-tap-highlight-color: transparent;
+}
 .site-header.scrolled { box-shadow: 0 4px 32px rgba(0,0,0,.3); }
 .header-row {
   display: flex; align-items: center; gap: 24px;
@@ -161,6 +165,121 @@ textarea { resize: vertical; min-height: 80px; }
   .nav-cta { display: none; }
 }
 
+@media (max-width: 768px) {
+  .header-row {
+    justify-content: space-between;
+  }
+
+  .mobile-nav-toggle {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .site-header {
+    overflow: visible;
+    isolation: isolate;
+    z-index: 99999;
+  }
+
+  .mobile-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 16px;
+    right: 16px;
+    display: block;
+    max-height: none;
+    overflow: visible;
+    padding: 16px;
+    background: linear-gradient(180deg, rgba(7, 12, 24, 0.94) 0%, rgba(15, 23, 42, 0.92) 100%);
+    backdrop-filter: blur(22px) saturate(165%);
+    -webkit-backdrop-filter: blur(22px) saturate(165%);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 16px;
+    box-shadow: 0 24px 60px rgba(2, 6, 23, 0.46), inset 0 1px 0 rgba(255,255,255,.12);
+    z-index: 99999;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(-6px);
+    transition: opacity .12s ease, transform .12s ease, visibility .12s ease;
+    will-change: opacity, transform;
+  }
+
+  .mobile-menu.active {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0);
+    max-height: none;
+    padding: 16px;
+  }
+
+  .mobile-menu::before,
+  .mobile-menu::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    pointer-events: none;
+  }
+
+  .mobile-menu::before {
+    background: linear-gradient(180deg, rgba(255,255,255,.12) 0%, rgba(255,255,255,.03) 100%);
+    opacity: .85;
+  }
+
+  .mobile-menu::after {
+    inset: 1px;
+    border: 1px solid rgba(255,255,255,.06);
+  }
+
+  .mobile-menu .mobile-links {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    position: relative;
+    z-index: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-menu a,
+  .mobile-menu button,
+  .mobile-menu .mobile-links a,
+  .mobile-menu .mobile-links button {
+    pointer-events: auto;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-menu .mobile-links a,
+  .mobile-menu .mobile-links button {
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 12px 14px;
+    background: rgba(255,255,255,.10);
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 12px;
+    box-shadow: 0 10px 24px rgba(0,0,0,.18);
+    color: rgba(255,255,255,.98);
+  }
+
+  .mobile-menu .mobile-links a:hover,
+  .mobile-menu .mobile-links button:hover,
+  .mobile-menu .mobile-links a.is-active {
+    background: rgba(255,255,255,.18);
+  }
+
+  .mobile-menu .mobile-sep {
+    grid-column: 1 / -1;
+    margin: 2px 0;
+    border-top: 1px solid rgba(255,255,255,.12);
+  }
+}
+
 /* ── Buttons ── */
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
@@ -215,12 +334,24 @@ textarea { resize: vertical; min-height: 80px; }
   position: relative; min-height: calc(100vh - var(--header-h));
   display: flex; align-items: center;
   background: var(--dark); color: #fff; overflow: hidden;
+  z-index: 1;
 }
-.hero-media { position: absolute; inset: 0; }
-.hero-media video, .hero-media img { width: 100%; height: 100%; object-fit: cover; }
+.hero::before,
+.hero::after {
+  pointer-events: none;
+}
+.hero-media {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.hero-media video, .hero-media img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 .hero-overlay {
   position: absolute; inset: 0;
   background: linear-gradient(135deg, rgba(15,23,42,.85) 0%, rgba(15,23,42,.6) 60%, transparent 100%);
+  pointer-events: none;
+  z-index: 0;
 }
 .hero-inner {
   position: relative; z-index: 1;
@@ -870,9 +1001,13 @@ body.ambient-motion::after {
   background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 72%);
   animation: ambientDriftTwo 22s ease-in-out infinite;
 }
-[data-site-shell], .site-header, .modal, .vs-toast, .social-panel {
+[data-site-shell], .modal, .vs-toast, .social-panel {
   position: relative;
   z-index: 1;
+}
+.site-header {
+  position: sticky;
+  z-index: 99999;
 }
 .motion-float {
   animation: softFloat var(--float-duration, 14s) ease-in-out infinite;

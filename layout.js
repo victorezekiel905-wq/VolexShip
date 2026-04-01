@@ -43,12 +43,12 @@ function headerMarkup(page, user) {
           ${authBtn}
         </div>
 
-        <button class="icon-btn mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle menu">
+        <button class="icon-btn mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle menu" aria-controls="mobileDrawer" aria-expanded="false" type="button">
           <i class="fa-solid fa-bars"></i>
         </button>
       </div>
 
-      <div class="mobile-drawer" id="mobileDrawer">
+      <div class="mobile-drawer mobile-menu" id="mobileDrawer" aria-hidden="true">
         <div class="mobile-links">
           <a href="index.html">Home</a>
           <a href="about.html">About</a>
@@ -177,17 +177,9 @@ function installGlobalInteractions() {
   const drawer = document.getElementById('mobileDrawer');
 
   if (toggle && drawer) {
-    toggle.addEventListener('click', () => {
-      drawer.classList.toggle('active');
-      toggle.querySelector('i').className = drawer.classList.contains('active')
-        ? 'fa-solid fa-xmark' : 'fa-solid fa-bars';
-    });
-    document.addEventListener('click', e => {
-      if (!e.target.closest('.site-header')) {
-        drawer.classList.remove('active');
-        if (toggle.querySelector('i')) toggle.querySelector('i').className = 'fa-solid fa-bars';
-      }
-    });
+    const isOpen = drawer.classList.contains('active');
+    toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    drawer.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
   }
 
   const onScroll = () => {

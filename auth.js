@@ -23,6 +23,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.getElementById('loginEmail').value,
           document.getElementById('loginPassword').value
         );
+        if (user.role === 'admin') {
+          localStorage.setItem('role', 'admin');
+          localStorage.setItem('isAdmin', 'true');
+        }
         alert.className = 'alert success';
         alert.textContent = user.role === 'admin'
           ? 'Access verified. Redirecting…'
