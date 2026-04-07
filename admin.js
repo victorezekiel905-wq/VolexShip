@@ -36,7 +36,7 @@ function renderAdminStats(shipments, users, requests) {
   };
   set('adminShipments', visibleShipments.length);
   set('adminCustomers', users.length);
-  set('adminPaused', visibleShipments.filter(shipment => shipment.status === 'paused').length);
+  set('adminPaused', visibleShipments.filter(shipment => shipment.status === 'paused' || shipment.statusControl === 'paused').length);
   set('adminDelivered', visibleShipments.filter(shipment => shipment.status === 'delivered').length);
   set('adminRequests', requests.filter(request => request.status === 'new').length);
   set('adminMessages', getAllMessages().length);

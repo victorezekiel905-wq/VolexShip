@@ -1,5 +1,5 @@
 -- VeloxShip Supabase schema
--- Dynamic shipment simulation + pause/resume + realtime movement history
+-- Dynamic shipment simulation + pause/resume + hourly movement history
 
 create extension if not exists pgcrypto;
 
@@ -63,6 +63,7 @@ create table if not exists public.shipment (
   total_events integer default 0,
   movement_plan jsonb not null default '[]'::jsonb,
   movement_step_interval_hours numeric default 1,
+  movement_engine_mode text default 'hourly_step',
   next_movement_at timestamptz,
   next_simulation_at timestamptz,
   deleted_at timestamptz,
@@ -84,6 +85,8 @@ alter table public.shipment
   add column if not exists movement_step_interval_hours numeric default 1;
 alter table public.shipment
   add column if not exists next_simulation_at timestamptz;
+alter table public.shipment
+  add column if not exists movement_engine_mode text default 'hourly_step';
 
 create index if not exists shipment_tracking_code_idx on public.shipment (tracking_code);
 create index if not exists shipment_user_id_idx on public.shipment (user_id);

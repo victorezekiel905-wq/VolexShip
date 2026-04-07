@@ -393,37 +393,15 @@ function computeShipmentProgress(shipment) {
   if (shipment.status === 'delivered' || shipment.status === 'deleted') return 100;
 
   const plan = Array.isArray(shipment.movementPlan) ? shipment.movementPlan : [];
-  const currentIndex = clamp(Number(shipment.currentEventIndex ?? shipment.currentStep ?? 0), 0, Math.max(plan.length - 1, 0));
-
-  if (plan.length > 1) {
-    const base = (currentIndex / (plan.length - 1)) * 100;
-    const active = shipment.status !== 'paused' && shipment.statusControl !== 'paused';
-    if (!active || currentIndex >= plan.length - 1) {
-      return clamp(shipment.status === 'paused' && shipment.pausedProgress != null ? shipment.pausedProgress : base, 0, 100);
-    }
-
-    const currentEvent = plan[currentIndex];
-    const nextEvent = plan[currentIndex + 1];
-    const currentTime = new Date(currentEvent?.scheduledAt || currentEvent?.scheduled_for || shipment.createdAt).getTime();
-    const nextTime = new Date(nextEvent?.scheduledAt || nextEvent?.scheduled_for || shipment.estimatedArrival || shipment.deliveryDeadline).getTime();
-    if (Number.isFinite(currentTime) && Number.isFinite(nextTime) && nextTime > currentTime) {
-      const ratio = clamp((Date.now() - currentTime) / (nextTime - currentTime), 0, 1);
-      const nextProgress = ((currentIndex + 1) / (plan.length - 1)) * 100;
-      return clamp(base + (nextProgress - base) * ratio, 0, 100);
-    }
-    return clamp(base, 0, 100);
-  }
+  const totalSteps = Math.max(plan.length - 1, Number(shipment.totalEvents || shipment.totalSteps || 0) - 1, 1);
+  const currentIndex = clamp(Number(shipment.currentEventIndex ?? shipment.currentStep ?? 0), 0, totalSteps);
+  const discreteProgress = (currentIndex / totalSteps) * 100;
 
   if (shipment.status === 'paused' && shipment.pausedProgress != null) {
-    return clamp(shipment.pausedProgress, 8, 96);
+    return clamp(shipment.pausedProgress, 0, 100);
   }
 
-  const stageP = getStatusMeta(shipment.status).progress;
-  const start = new Date(shipment.departureTime || shipment.createdAt).getTime();
-  const end = new Date(shipment.estimatedArrival || shipment.deliveryDeadline).getTime();
-  if (!start || !end || end <= start) return clamp(stageP, 8, 96);
-  const ratio = clamp((Date.now() - start) / (end - start), 0, 1);
-  return clamp(10 + ratio * 86, 8, 96);
+  return clamp(discreteProgress || getStatusMeta(shipment.status).progress, 0, 100);
 }
 
 function isShipmentMotionActive(shipment) {
@@ -1055,6 +1033,61 @@ function showToast(message, tone = 'info') {
 }
 
 /* ── Live telemetry ── */
+function ensureBlinkAddressMarker(marker) {
+  if (!marker) return null;
+  marker.style.position = 'absolute';
+  marker.style.left = 'calc(var(--progress, 0%) - 10px)';
+  marker.style.zIndex = '2';
+  marker.style.transition = 'left .8s ease';
+
+  let addressMarker = marker.querySelector('.vs-address-marker');
+  if (!addressMarker) {
+    addressMarker = document.createElement('span');
+    addressMarker.className = 'vs-address-marker';
+    addressMarker.setAttribute('aria-hidden', 'true');
+    addressMarker.innerHTML = '<i class="fa-solid fa-location-dot"></i>';
+    addressMarker.style.position = 'absolute';
+    addressMarker.style.left = '50%';
+    addressMarker.style.top = '-18px';
+    addressMarker.style.transform = 'translateX(-50%)';
+    addressMarker.style.fontSize = '0.72rem';
+    addressMarker.style.lineHeight = '1';
+    addressMarker.style.color = '#ef4444';
+    addressMarker.style.pointerEvents = 'none';
+    addressMarker.style.transition = 'opacity .2s ease, transform .2s ease';
+    marker.appendChild(addressMarker);
+  }
+  return addressMarker;
+}
+
+function syncLaneMotion(lane, shipment) {
+  const progress = computeShipmentProgress(shipment);
+  lane.style.setProperty('--progress', `${progress}%`);
+  const bar = lane.closest('.shipment-progress-wrap')?.querySelector('.shipment-progress > span');
+  if (bar) bar.style.width = `${progress}%`;
+
+  const marker = lane.querySelector('.truck-marker');
+  if (!marker) return;
+
+  const addressMarker = ensureBlinkAddressMarker(marker);
+  const active = isShipmentMotionActive(shipment);
+  const phaseOn = Math.floor(Date.now() / 800) % 2 === 0;
+
+  marker.style.opacity = '1';
+  marker.style.filter = active ? 'drop-shadow(0 0 8px rgba(37,99,235,.35))' : 'none';
+  marker.style.transform = 'translateY(0)';
+  marker.title = `${shipment.currentLocation || 'Current location'} · ${getStatusMeta(shipment.status).label}`;
+  marker.dataset.location = shipment.currentLocation || '';
+  marker.dataset.status = shipment.status || '';
+
+  if (addressMarker) {
+    addressMarker.style.opacity = active ? (phaseOn ? '1' : '0.22') : '0';
+    addressMarker.style.transform = active
+      ? `translateX(-50%) translateY(${phaseOn ? '-1px' : '1px'})`
+      : 'translateX(-50%) translateY(0)';
+  }
+}
+
 function refreshLiveTelemetry(scope = document) {
   scope.querySelectorAll('[data-shipment-eta]').forEach(node => {
     const shipment = getAllShipments().find(item => String(item.id) === String(node.dataset.shipmentEta));
@@ -1065,19 +1098,7 @@ function refreshLiveTelemetry(scope = document) {
   scope.querySelectorAll('[data-progress-shipment]').forEach(lane => {
     const shipment = getAllShipments().find(item => String(item.id) === String(lane.dataset.progressShipment));
     if (!shipment) return;
-    const progress = computeShipmentProgress(shipment);
-    lane.style.setProperty('--progress', `${progress}%`);
-    const bar = lane.closest('.shipment-progress-wrap')?.querySelector('.shipment-progress > span');
-    if (bar) bar.style.width = `${progress}%`;
-
-    const marker = lane.querySelector('.truck-marker');
-    if (marker) {
-      const active = isShipmentMotionActive(shipment);
-      const phaseOn = Math.floor(Date.now() / 500) % 2 === 0;
-      marker.style.opacity = active ? (phaseOn ? '1' : '0.28') : '1';
-      marker.style.filter = active && phaseOn ? 'drop-shadow(0 0 8px rgba(37,99,235,.45))' : 'none';
-      marker.style.transform = active ? `translateY(${phaseOn ? '-1px' : '1px'})` : 'translateY(0)';
-    }
+    syncLaneMotion(lane, shipment);
   });
 
   const el = document.getElementById('elapsedDisplay');
@@ -1097,7 +1118,7 @@ function refreshLiveTelemetry(scope = document) {
 function startLiveTelemetry() {
   refreshLiveTelemetry();
   clearInterval(window.__vsTelemetry);
-  window.__vsTelemetry = setInterval(refreshLiveTelemetry, 1000);
+  window.__vsTelemetry = setInterval(refreshLiveTelemetry, 800);
 }
 
 function getDataModeLabel() {

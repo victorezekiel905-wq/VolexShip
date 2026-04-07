@@ -1,5 +1,5 @@
 const HOURLY_MOVEMENT_MS = 60 * 60 * 1000;
-const MICRO_LOCATION_MS = 4 * HOURLY_MOVEMENT_MS;
+const MICRO_LOCATION_MS = HOURLY_MOVEMENT_MS;
 
 const CORRIDOR_PREFIXES = ['Transit Corridor', 'Cargo Route', 'Logistics Channel', 'Freight Vector', 'Relay Passage', 'Distribution Arc'];
 const CORRIDOR_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -54,19 +54,19 @@ function createMajorPipeline(origin, destination) {
     },
     {
       event_type: 'major',
-      location: 'Central Dispatch Hub',
+      location: 'Central Sorting Center',
       status: 'confirmed',
       note: 'Shipment dispatched from origin into the central routing network.',
       major_step_index: 1,
-      major_step_label: 'Central Dispatch Hub'
+      major_step_label: 'Central Sorting Center'
     },
     {
       event_type: 'major',
-      location: 'Regional Sorting Center',
+      location: 'Regional Transit Hub',
       status: 'in_transit',
       note: 'Shipment sorted for regional transit progression.',
       major_step_index: 2,
-      major_step_label: 'Regional Sorting Center'
+      major_step_label: 'Regional Transit Hub'
     },
     {
       event_type: 'major',
@@ -145,40 +145,43 @@ function ensureFutureDeadline(startAt, deliveryDeadline) {
 function buildScheduledMovementPlan({ origin, destination, startAt, deliveryDeadline }) {
   const { start, end } = ensureFutureDeadline(startAt, deliveryDeadline);
   const majorPipeline = createMajorPipeline(origin, destination);
-  const totalDurationMs = end.getTime() - start.getTime();
-  const majorIntervalMs = totalDurationMs / (majorPipeline.length - 1);
+  const segmentCount = Math.max(majorPipeline.length - 1, 1);
+  const requestedHours = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / HOURLY_MOVEMENT_MS));
+  const totalHourlySteps = Math.max(requestedHours, segmentCount);
+  const baseHoursPerSegment = Math.floor(totalHourlySteps / segmentCount);
+  const remainder = totalHourlySteps % segmentCount;
+
   const events = [];
+  let cursorMs = start.getTime();
+  events.push({
+    ...majorPipeline[0],
+    scheduled_for: new Date(cursorMs).toISOString()
+  });
 
-  majorPipeline.forEach((majorStep, index) => {
-    const majorTime = new Date(start.getTime() + majorIntervalMs * index);
-    events.push({
-      ...majorStep,
-      scheduled_for: majorTime.toISOString()
-    });
+  for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
+    const segmentHours = baseHoursPerSegment + (segmentIndex < remainder ? 1 : 0);
 
-    if (index >= majorPipeline.length - 1) return;
-
-    const nextMajorTime = new Date(start.getTime() + majorIntervalMs * (index + 1));
-    let microCursor = majorTime.getTime() + MICRO_LOCATION_MS;
-    let microIndex = 0;
-
-    while (microCursor < nextMajorTime.getTime() - 60 * 1000) {
-      const micro = createMicroLocation(index, microIndex);
+    for (let hourIndex = 1; hourIndex < segmentHours; hourIndex += 1) {
+      cursorMs += HOURLY_MOVEMENT_MS;
+      const micro = createMicroLocation(segmentIndex, hourIndex - 1);
       events.push({
         event_type: 'micro',
         location: micro.location,
         status: micro.status,
         note: micro.note,
-        major_step_index: majorStep.major_step_index,
-        major_step_label: majorStep.major_step_label,
-        scheduled_for: new Date(microCursor).toISOString()
+        major_step_index: majorPipeline[segmentIndex].major_step_index,
+        major_step_label: majorPipeline[segmentIndex].major_step_label,
+        scheduled_for: new Date(cursorMs).toISOString()
       });
-      microIndex += 1;
-      microCursor += MICRO_LOCATION_MS;
     }
-  });
 
-  events.sort((a, b) => new Date(a.scheduled_for) - new Date(b.scheduled_for));
+    cursorMs += HOURLY_MOVEMENT_MS;
+    events.push({
+      ...majorPipeline[segmentIndex + 1],
+      scheduled_for: new Date(cursorMs).toISOString()
+    });
+  }
+
   const totalEvents = events.length;
   const indexed = events.map((event, eventIndex) => ({
     ...event,
@@ -191,9 +194,9 @@ function buildScheduledMovementPlan({ origin, destination, startAt, deliveryDead
     totalEvents,
     nextMovementAt: getNextEventTime(indexed, 0, 'major'),
     nextSimulationAt: getNextEventTime(indexed, 0, 'micro'),
-    deliveryDeadline: end.toISOString(),
+    deliveryDeadline: new Date(cursorMs).toISOString(),
     startAt: start.toISOString(),
-    stepIntervalHours: Number((totalDurationMs / Math.max(totalEvents - 1, 1) / HOURLY_MOVEMENT_MS).toFixed(2))
+    stepIntervalHours: 1
   };
 }
 
@@ -244,5 +247,6 @@ module.exports = {
   getNextEventTime,
   shiftFutureEvents,
   getDeliveryEta,
-  getCurrentEvent
+  getCurrentEvent,
+  toIso
 };

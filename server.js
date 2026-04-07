@@ -35,7 +35,7 @@ const USERS_TABLE = 'volex';
 const SHIPMENT_TABLE = 'shipment';
 const MOVEMENT_TABLE = 'movement_history';
 const ENGINE_POLL_MS = 60 * 1000;
-const HISTORY_LIMIT = 100;
+const HISTORY_LIMIT = 500;
 
 let supabase = null;
 let majorEngineBusy = false;
@@ -385,13 +385,37 @@ function createShipmentPayload(body = {}, assignment = null) {
   };
 }
 
-function broadcastRefresh(reason = 'shipments:refresh', shipmentId = null) {
-  const message = JSON.stringify({ type: 'refresh', reason, shipmentId, at: new Date().toISOString() });
+function sendRefreshMessage(message, audience = null) {
   for (const client of wsClients) {
-    if (client.readyState === 1) {
+    const isAdminClient = client?.meta?.role === 'admin';
+    const userMatches = audience
+      ? (Boolean(audience.userId) && audience.userId === client?.meta?.userId)
+        || (Boolean(audience.email) && audience.email === client?.meta?.email)
+      : true;
+    if (client.readyState === 1 && (isAdminClient || userMatches)) {
       try { client.send(message); } catch {}
     }
   }
+}
+
+function broadcastRefresh(reason = 'shipments:refresh', shipmentId = null) {
+  const message = JSON.stringify({ type: 'refresh', reason, shipmentId, at: new Date().toISOString() });
+  if (!shipmentId || !DB_READY) {
+    sendRefreshMessage(message, null);
+    return;
+  }
+  supabase
+    .from(SHIPMENT_TABLE)
+    .select('email,user_id')
+    .eq('id', shipmentId)
+    .maybeSingle()
+    .then(({ data }) => {
+      sendRefreshMessage(message, {
+        email: String(data?.email || '').trim().toLowerCase(),
+        userId: String(data?.user_id || '').trim()
+      });
+    })
+    .catch(() => sendRefreshMessage(message, null));
 }
 
 async function updateShipmentPointersAndState(row, plan, nextIndexOverride = null) {
@@ -516,7 +540,7 @@ async function pauseShipment(shipmentId, reason = '') {
   if (existing.status_control === 'paused') return fetchShipmentById(shipmentId);
 
   const nowIso = new Date().toISOString();
-  const pauseReason = String(reason || 'Shipment temporarily on hold').trim() || 'Shipment temporarily on hold';
+  const pauseReason = String(reason || 'Shipment temporarily paused').trim() || 'Shipment temporarily paused';
   const payload = {
     status: 'paused',
     status_control: 'paused',
@@ -532,7 +556,7 @@ async function pauseShipment(shipmentId, reason = '') {
     shipmentId,
     location: existing.current_location || getCurrentShipmentEvent(existing)?.location || 'Logistics Hub',
     status: 'paused',
-    note: 'Shipment temporarily on hold',
+    note: 'Shipment temporarily paused',
     movementType: 'control',
     simulated: false
   });
@@ -798,7 +822,7 @@ app.patch('/api/shipments/:id', async (req, res) => {
 
     const nextStatus = req.body?.status ? normalizeStatus(req.body.status) : normalizeStatus(existing.status);
     if (nextStatus === 'paused') {
-      const shipment = await pauseShipment(Number(req.params.id), req.body?.pausedReason || req.body?.paused_reason || 'Shipment temporarily on hold');
+      const shipment = await pauseShipment(Number(req.params.id), req.body?.pausedReason || req.body?.paused_reason || 'Shipment temporarily paused');
       return res.json({ shipment });
     }
     if (existing.status_control === 'paused' && nextStatus !== 'paused') {

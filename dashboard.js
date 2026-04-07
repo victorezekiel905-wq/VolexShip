@@ -6,7 +6,7 @@ function renderDashboardStats(shipments) {
   const el = id => document.getElementById(id);
   el('statTotal').textContent = shipments.length;
   el('statTransit').textContent = shipments.filter(s => ['confirmed', 'in_transit', 'customs', 'out_for_delivery'].includes(s.status)).length;
-  el('statPaused').textContent = shipments.filter(s => s.status === 'paused').length;
+  el('statPaused').textContent = shipments.filter(s => s.status === 'paused' || s.statusControl === 'paused').length;
   el('statDelivered').textContent = shipments.filter(s => s.status === 'delivered').length;
 }
 
