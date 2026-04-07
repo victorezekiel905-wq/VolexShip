@@ -1,9 +1,5 @@
 -- VeloxShip Supabase schema
--- Includes:
--- 1) Existing lightweight user table (public.volex)
--- 2) New shipment table (public.shipment)
--- 3) New movement timeline table (public.movement_history)
--- 4) Required tracking indexes and basic policies
+-- Dynamic shipment simulation + pause/resume + realtime movement history
 
 create extension if not exists pgcrypto;
 
@@ -51,27 +47,51 @@ create table if not exists public.shipment (
   origin text not null,
   destination text not null,
   status text not null default 'processing',
+  status_control text not null default 'active' check (status_control in ('active', 'paused')),
   current_location text not null,
   estimated_delivery timestamptz,
+  delivery_deadline timestamptz,
   departure_time timestamptz,
   paused_reason text,
+  pause_started_at timestamptz,
   notes text,
   shipping_mode text default 'Express',
   priority text default 'Priority',
   confirmed_by_customer boolean default false,
   current_step integer default 0,
+  current_event_index integer default 0,
+  total_events integer default 0,
   movement_plan jsonb not null default '[]'::jsonb,
+  movement_step_interval_hours numeric default 1,
   next_movement_at timestamptz,
+  next_simulation_at timestamptz,
   deleted_at timestamptz,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
 
+alter table public.shipment
+  add column if not exists status_control text not null default 'active';
+alter table public.shipment
+  add column if not exists delivery_deadline timestamptz;
+alter table public.shipment
+  add column if not exists pause_started_at timestamptz;
+alter table public.shipment
+  add column if not exists current_event_index integer default 0;
+alter table public.shipment
+  add column if not exists total_events integer default 0;
+alter table public.shipment
+  add column if not exists movement_step_interval_hours numeric default 1;
+alter table public.shipment
+  add column if not exists next_simulation_at timestamptz;
+
 create index if not exists shipment_tracking_code_idx on public.shipment (tracking_code);
 create index if not exists shipment_user_id_idx on public.shipment (user_id);
 create index if not exists shipment_email_idx on public.shipment (email);
 create index if not exists shipment_status_idx on public.shipment (status);
+create index if not exists shipment_status_control_idx on public.shipment (status_control);
 create index if not exists shipment_next_movement_at_idx on public.shipment (next_movement_at);
+create index if not exists shipment_next_simulation_at_idx on public.shipment (next_simulation_at);
 create index if not exists shipment_created_at_idx on public.shipment (created_at desc);
 
 create table if not exists public.movement_history (
@@ -80,11 +100,19 @@ create table if not exists public.movement_history (
   location text not null,
   status text not null,
   note text,
+  movement_type text not null default 'manual',
+  is_simulated boolean not null default false,
   created_at timestamptz default now()
 );
 
+alter table public.movement_history
+  add column if not exists movement_type text not null default 'manual';
+alter table public.movement_history
+  add column if not exists is_simulated boolean not null default false;
+
 create index if not exists idx_movement_shipment_id on public.movement_history(shipment_id);
 create index if not exists idx_movement_created_at on public.movement_history(created_at desc);
+create index if not exists idx_movement_type on public.movement_history(movement_type);
 
 alter table public.volex enable row level security;
 alter table public.shipment enable row level security;

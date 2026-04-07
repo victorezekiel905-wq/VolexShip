@@ -65,23 +65,26 @@ function renderShipmentTable() {
           <tr><th>Tracking</th><th>Customer</th><th>Product</th><th>Status</th><th>Location</th><th>ETA</th><th>Actions</th></tr>
         </thead>
         <tbody>
-          ${shipments.map(shipment => `
-            <tr>
-              <td><code>${shipment.trackingCode}</code></td>
-              <td><span>${shipment.customerName || '—'}</span><br><small>${shipment.customerEmail || 'Unassigned'}</small></td>
-              <td>${shipment.productName}</td>
-              <td>${shipmentStatusBadge(shipment.status)}</td>
-              <td>${shipment.currentLocation || '—'}</td>
-              <td>${getShipmentEtaText(shipment)}</td>
-              <td>
-                <div class="table-actions">
-                  <button class="table-btn" data-open-edit="${shipment.id}">Update</button>
-                  <button class="table-btn warn" data-pause-shipment="${shipment.id}">Pause</button>
-                  <button class="table-btn warn" data-copy-code="${shipment.trackingCode}">Copy code</button>
-                  <button class="table-btn danger" data-delete-shipment="${shipment.id}">Delete</button>
-                </div>
-              </td>
-            </tr>`).join('')}
+          ${shipments.map(shipment => {
+            const isPaused = shipment.status === 'paused' || shipment.statusControl === 'paused';
+            return `
+              <tr>
+                <td><code>${shipment.trackingCode}</code></td>
+                <td><span>${shipment.customerName || '—'}</span><br><small>${shipment.customerEmail || 'Unassigned'}</small></td>
+                <td>${shipment.productName}</td>
+                <td>${shipmentStatusBadge(shipment.status)}</td>
+                <td>${shipment.currentLocation || '—'}</td>
+                <td>${getShipmentEtaText(shipment)}</td>
+                <td>
+                  <div class="table-actions">
+                    <button class="table-btn" data-open-edit="${shipment.id}">Update</button>
+                    <button class="table-btn warn" data-toggle-shipment="${shipment.id}">${isPaused ? 'Resume' : 'Pause'}</button>
+                    <button class="table-btn warn" data-copy-code="${shipment.trackingCode}">Copy code</button>
+                    <button class="table-btn danger" data-delete-shipment="${shipment.id}">Delete</button>
+                  </div>
+                </td>
+              </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>`;
@@ -90,8 +93,8 @@ function renderShipmentTable() {
     button.addEventListener('click', () => openEditModal(button.dataset.openEdit));
   });
 
-  host.querySelectorAll('[data-pause-shipment]').forEach(button => {
-    button.addEventListener('click', () => handlePauseShipment(button.dataset.pauseShipment));
+  host.querySelectorAll('[data-toggle-shipment]').forEach(button => {
+    button.addEventListener('click', () => handleToggleShipment(button.dataset.toggleShipment));
   });
 
   host.querySelectorAll('[data-copy-code]').forEach(button => {
@@ -106,7 +109,8 @@ function renderShipmentTable() {
   });
 }
 
-async function handlePauseShipment(id) {
+
+async function handlePauseShipment(id, presetReason = '') {
   if (!hasAdminPrivileges()) {
     showToast('Admin access required.', 'error');
     return;
@@ -116,20 +120,21 @@ async function handlePauseShipment(id) {
     showToast('Shipment not found.', 'error');
     return;
   }
-  const reason = window.prompt('Enter pause reason', shipment.pausedReason || '');
+  const reason = presetReason || window.prompt('Enter pause reason', shipment.pausedReason || '');
   if (reason === null) return;
-  const pauseReason = reason.trim();
+  const pauseReason = String(reason || '').trim();
   if (!pauseReason) {
     showToast('Pause reason is required.', 'warning');
     return;
   }
   try {
-    const updated = await updateShipment(id, {
-      status: 'paused',
-      pausedReason: pauseReason,
-      historyTitle: 'Shipment paused',
-      historyDetail: `Shipment paused: ${pauseReason}`
+    const result = await window.vsApiFetch(`/shipments/${id}/pause`, {
+      method: 'POST',
+      headers: buildAdminHeaders(),
+      body: JSON.stringify({ reason: pauseReason })
     });
+    const updated = result.shipment;
+    await ensureShipmentsLoaded(true);
     sendDashboardActionMessage(updated, `Shipment paused: ${pauseReason}`, 'Shipment paused');
     setAdminAlert('Shipment paused successfully.', 'success');
     showToast('Shipment paused.', 'success');
@@ -138,6 +143,45 @@ async function handlePauseShipment(id) {
     showToast(error.message, 'error');
   }
 }
+
+async function handleResumeShipment(id) {
+  if (!hasAdminPrivileges()) {
+    showToast('Admin access required.', 'error');
+    return;
+  }
+  const shipment = getAllShipments().find(item => String(item.id) === String(id));
+  if (!shipment) {
+    showToast('Shipment not found.', 'error');
+    return;
+  }
+  try {
+    const result = await window.vsApiFetch(`/shipments/${id}/resume`, {
+      method: 'POST',
+      headers: buildAdminHeaders()
+    });
+    const updated = result.shipment;
+    await ensureShipmentsLoaded(true);
+    sendDashboardActionMessage(updated, 'Shipment movement resumed', 'Shipment resumed');
+    setAdminAlert('Shipment resumed successfully.', 'success');
+    showToast('Shipment resumed.', 'success');
+    refreshAdmin();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function handleToggleShipment(id) {
+  const shipment = getAllShipments().find(item => String(item.id) === String(id));
+  if (!shipment) {
+    showToast('Shipment not found.', 'error');
+    return;
+  }
+  if (shipment.status === 'paused' || shipment.statusControl === 'paused') {
+    return handleResumeShipment(id);
+  }
+  return handlePauseShipment(id);
+}
+
 
 async function handleDeleteShipment(id) {
   if (!hasAdminPrivileges()) {
@@ -491,27 +535,44 @@ function installEditForm() {
       return;
     }
     if (!editingShipmentId) return;
+    const shipment = getAllShipments().find(item => String(item.id) === String(editingShipmentId));
+    if (!shipment) return;
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
     button.textContent = 'Saving…';
     try {
       const status = document.getElementById('editStatus').value;
       const pauseReason = document.getElementById('editPauseReason').value.trim();
+
+      if (status === 'paused') {
+        if (!pauseReason) throw new Error('Pause reason is required when pausing a shipment.');
+        await handlePauseShipment(editingShipmentId, pauseReason);
+        document.getElementById('editModal')?.classList.remove('active');
+        return;
+      }
+
+      if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
+        await window.vsApiFetch(`/shipments/${editingShipmentId}/resume`, {
+          method: 'POST',
+          headers: buildAdminHeaders()
+        });
+      }
+
       const payload = {
         status,
         currentLocation: document.getElementById('editLocation').value,
         estimatedArrival: document.getElementById('editEta').value || null,
         departureTime: document.getElementById('editDepartureTime')?.value || null,
-        pausedReason: pauseReason,
+        pausedReason: '',
         historyTitle: document.getElementById('editHistoryTitle').value || undefined,
         historyDetail: document.getElementById('editHistoryDetail').value || undefined
       };
 
-      if (status === 'paused') {
-        if (!pauseReason) throw new Error('Pause reason is required when pausing a shipment.');
-        if (!payload.historyTitle) payload.historyTitle = 'Shipment paused';
-        if (!payload.historyDetail) payload.historyDetail = `Shipment paused: ${pauseReason}`;
+      if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
+        if (!payload.historyTitle) payload.historyTitle = 'In Transit';
+        if (!payload.historyDetail) payload.historyDetail = 'Shipment movement resumed';
       }
+
       if (status === 'deleted') {
         payload.deleted = true;
         payload.deletedAt = new Date().toISOString();
@@ -520,8 +581,8 @@ function installEditForm() {
       }
 
       const updated = await updateShipment(editingShipmentId, payload);
-      if (status === 'paused') {
-        sendDashboardActionMessage(updated, `Shipment paused: ${pauseReason}`, 'Shipment paused');
+      if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
+        sendDashboardActionMessage(updated, 'Shipment movement resumed', 'Shipment resumed');
       }
       if (status === 'deleted') {
         sendDashboardActionMessage(updated, 'Shipment has been deleted', 'Shipment deleted');
@@ -529,6 +590,7 @@ function installEditForm() {
       document.getElementById('editModal')?.classList.remove('active');
       showToast('Shipment updated.', 'success');
       setAdminAlert('Shipment updated successfully.', 'success');
+      await ensureShipmentsLoaded(true);
       refreshAdmin();
     } catch (error) {
       showToast(error.message, 'error');
@@ -538,6 +600,7 @@ function installEditForm() {
     }
   });
 }
+
 
 function installMessageForm() {
   const form = document.getElementById('sendMessageForm');

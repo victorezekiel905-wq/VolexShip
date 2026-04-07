@@ -1,4 +1,4 @@
-/* VeloxShip — Node.js / Express server with tracking history + real-time movement engine */
+/* VeloxShip — Node.js / Express server with real-time shipment simulation */
 require('dotenv').config();
 
 const path = require('path');
@@ -6,8 +6,20 @@ const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
 const { WebSocketServer } = require('ws');
+const {
+  HOURLY_MOVEMENT_MS,
+  MICRO_LOCATION_MS,
+  normalizeStatus,
+  statusLabel,
+  buildScheduledMovementPlan,
+  getNextEvent,
+  getNextEventTime,
+  shiftFutureEvents,
+  getDeliveryEta,
+  getCurrentEvent
+} = require('./shipment-engine');
 
-const DEFAULT_SUPABASE_URL = 'https://lwrhnnfcmqvdodlsmwif.supabase.co';
+const DEFAULT_SUPABASE_URL = 'https://udjgrrjnyhaersaiuudj.supabase.co';
 const SUPABASE_URL = process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
@@ -22,12 +34,12 @@ const ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const USERS_TABLE = 'volex';
 const SHIPMENT_TABLE = 'shipment';
 const MOVEMENT_TABLE = 'movement_history';
-const TRACKING_STEP_MS = 60 * 60 * 1000;
-const ENGINE_TICK_MS = 60 * 1000;
-const HISTORY_LIMIT = 50;
+const ENGINE_POLL_MS = 60 * 1000;
+const HISTORY_LIMIT = 100;
 
 let supabase = null;
-let engineBusy = false;
+let majorEngineBusy = false;
+let simulationEngineBusy = false;
 const wsClients = new Set();
 
 function logDbError(scope, error) {
@@ -104,73 +116,27 @@ function getCustomerUserId(req) {
   return (req.header('x-customer-user-id') || req.query.user_id || '').trim();
 }
 
-function normalizeStatus(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw) return 'processing';
-  if (['processing', 'pending'].includes(raw)) return 'processing';
-  if (['departed', 'confirmed'].includes(raw)) return 'confirmed';
-  if (['in transit', 'in_transit'].includes(raw)) return 'in_transit';
-  if (['arrived at facility', 'arrived_at_facility', 'customs', 'customs review'].includes(raw)) return 'customs';
-  if (['out for delivery', 'out_for_delivery'].includes(raw)) return 'out_for_delivery';
-  if (raw === 'delivered') return 'delivered';
-  if (raw === 'paused') return 'paused';
-  if (raw === 'deleted') return 'deleted';
-  return raw.replace(/\s+/g, '_');
-}
-
-function statusLabel(status) {
-  const normalized = normalizeStatus(status);
-  const labels = {
-    processing: 'Processing',
-    confirmed: 'Departed',
-    in_transit: 'In Transit',
-    customs: 'Arrived at Facility',
-    out_for_delivery: 'Out for Delivery',
-    delivered: 'Delivered',
-    paused: 'Paused',
-    deleted: 'Deleted'
-  };
-  return labels[normalized] || String(status || 'Processing');
-}
-
-function statusStepIndex(status) {
-  const normalized = normalizeStatus(status);
-  const map = {
-    processing: 0,
-    confirmed: 1,
-    in_transit: 2,
-    customs: 3,
-    out_for_delivery: 4,
-    delivered: 5
-  };
-  return map[normalized] ?? 0;
-}
-
 function parseJson(value, fallback) {
-  if (!value) return fallback;
+  if (value == null) return fallback;
   if (typeof value === 'object') return value;
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
-function buildMovementPlan() {
-  return [
-    { location: 'Origin Facility', status: 'processing', note: 'Shipment received and registered at the origin facility.' },
-    { location: 'Regional Sorting Center', status: 'confirmed', note: 'Shipment departed the origin facility for regional sorting.' },
-    { location: 'International Transit Hub', status: 'in_transit', note: 'Shipment is moving through the main transit network.' },
-    { location: 'Logistics Processing Facility', status: 'customs', note: 'Shipment arrived at a logistics processing facility.' },
-    { location: 'Distribution Center', status: 'out_for_delivery', note: 'Shipment left the distribution center for final handoff.' },
-    { location: 'Final Delivery Hub', status: 'delivered', note: 'Shipment delivered successfully.' }
-  ];
+function safeIso(value, fallback = new Date()) {
+  const date = value ? new Date(value) : new Date(fallback);
+  if (Number.isNaN(date.getTime())) return new Date(fallback).toISOString();
+  return date.toISOString();
 }
 
-function computeEstimatedDelivery(currentStep, movementPlan, baseDate = new Date()) {
-  const remainingSteps = Math.max((movementPlan?.length || 0) - 1 - Number(currentStep || 0), 0);
-  return new Date(baseDate.getTime() + remainingSteps * TRACKING_STEP_MS).toISOString();
-}
-
-function nextMovementAt(currentStep, movementPlan, baseDate = new Date()) {
-  const isFinal = Number(currentStep || 0) >= (movementPlan?.length || 1) - 1;
-  return isFinal ? null : new Date(baseDate.getTime() + TRACKING_STEP_MS).toISOString();
+function mapPlanEvent(event = {}) {
+  return {
+    ...event,
+    scheduledFor: event.scheduledFor || event.scheduled_for || null,
+    eventType: event.eventType || event.event_type || 'major',
+    eventIndex: Number(event.eventIndex ?? event.event_index ?? 0),
+    majorStepIndex: Number(event.majorStepIndex ?? event.major_step_index ?? 0),
+    progressPercent: Number(event.progressPercent ?? event.progress_percent ?? 0)
+  };
 }
 
 function mapMovementRow(row) {
@@ -185,14 +151,33 @@ function mapMovementRow(row) {
     title: label,
     detail: note || `Status: ${label}`,
     note,
-    statusLabel: label
+    statusLabel: label,
+    movementType: row.movement_type || 'manual',
+    simulated: Boolean(row.is_simulated)
   };
+}
+
+function getRowPlan(row) {
+  const plan = parseJson(row?.movement_plan, []);
+  return Array.isArray(plan) ? plan.map(mapPlanEvent) : [];
+}
+
+function getNextPointers(plan, currentEventIndex) {
+  return {
+    nextMovementAt: getNextEventTime(plan, currentEventIndex, 'major'),
+    nextSimulationAt: getNextEventTime(plan, currentEventIndex, 'micro')
+  };
+}
+
+function getCurrentShipmentEvent(row) {
+  const plan = getRowPlan(row);
+  return getCurrentEvent(plan, Number(row?.current_event_index || 0));
 }
 
 function fromRow(row, historyRows = []) {
   if (!row) return null;
   const legacyMeta = parseJson(row.movement_history, {});
-  const plan = parseJson(row.movement_plan, buildMovementPlan());
+  const plan = getRowPlan(row);
   const history = Array.isArray(historyRows) && historyRows.length
     ? historyRows.map(mapMovementRow)
     : Array.isArray(legacyMeta.history)
@@ -218,56 +203,27 @@ function fromRow(row, historyRows = []) {
     shippingMode: row.shipping_mode || legacyMeta.shippingMode || 'Express',
     priority: row.priority || legacyMeta.priority || 'Priority',
     status: normalizeStatus(row.status || legacyMeta.status || 'processing'),
+    statusControl: row.status_control || legacyMeta.statusControl || 'active',
     pausedReason: row.paused_reason || legacyMeta.pausedReason || '',
-    pausedProgress: legacyMeta.pausedProgress ?? null,
     departureTime: row.departure_time || legacyMeta.departureTime || null,
     estimatedArrival: row.estimated_delivery || legacyMeta.estimatedArrival || null,
+    deliveryDeadline: row.delivery_deadline || legacyMeta.deliveryDeadline || row.estimated_delivery || null,
     createdAt: row.created_at || legacyMeta.createdAt || new Date().toISOString(),
+    updatedAt: row.updated_at || legacyMeta.updatedAt || row.created_at || new Date().toISOString(),
     notes: row.notes || legacyMeta.notes || '',
     confirmedByCustomer: Boolean(row.confirmed_by_customer ?? legacyMeta.confirmedByCustomer),
     deleted: normalizeStatus(row.status) === 'deleted',
     deletedAt: row.deleted_at || legacyMeta.deletedAt || null,
-    currentStep: Number(row.current_step || 0),
+    currentStep: Number(row.current_step ?? 0),
+    currentEventIndex: Number(row.current_event_index ?? row.current_step ?? 0),
     totalSteps: Array.isArray(plan) ? plan.length : 0,
-    movementPlan: Array.isArray(plan) ? plan : buildMovementPlan(),
+    totalEvents: Number(row.total_events ?? plan.length ?? 0),
+    nextMovementAt: row.next_movement_at || null,
+    nextSimulationAt: row.next_simulation_at || null,
+    pausedAt: row.pause_started_at || null,
+    movementPlan: plan,
+    stepIntervalHours: Number(row.movement_step_interval_hours ?? 0),
     history
-  };
-}
-
-function createShipmentPayload(body = {}, assignment = null) {
-  const now = new Date();
-  const movementPlan = buildMovementPlan();
-  const createdAt = now.toISOString();
-  return {
-    tracking_code: String(body.trackingCode || body.tracking_code || '').trim().toUpperCase(),
-    user_id: assignment?.userId || String(body.customerUserId || body.user_id || '').trim() || null,
-    full_name: assignment?.fullName || String(body.customerName || body.full_name || '').trim() || '',
-    email: (assignment?.email || body.customerEmail || body.email || '').trim().toLowerCase(),
-    phone: assignment?.phone || String(body.phone || '').trim() || '',
-    address: assignment?.address || String(body.address || '').trim() || '',
-    shipment_title: String(body.productName || body.shipment_title || 'Unnamed item').trim(),
-    product_category: String(body.productCategory || body.product_category || 'General cargo').trim(),
-    product_description: String(body.productDescription || body.product_description || '').trim(),
-    quantity: Number(body.quantity || 1),
-    weight: Number(body.weightKg || body.weight || 1),
-    value_usd: Number(body.valueUsd || body.value_usd || 0),
-    origin: String(body.origin || '—').trim() || '—',
-    destination: String(body.destination || '—').trim() || '—',
-    status: 'processing',
-    current_location: movementPlan[0].location,
-    estimated_delivery: computeEstimatedDelivery(0, movementPlan, now),
-    departure_time: body.departureTime || body.departure_time || createdAt,
-    paused_reason: '',
-    notes: String(body.notes || '').trim(),
-    shipping_mode: String(body.shippingMode || body.shipping_mode || 'Express').trim(),
-    priority: String(body.priority || 'Priority').trim(),
-    confirmed_by_customer: false,
-    current_step: 0,
-    movement_plan: JSON.stringify(movementPlan),
-    next_movement_at: nextMovementAt(0, movementPlan, now),
-    created_at: createdAt,
-    updated_at: createdAt,
-    deleted_at: null
   };
 }
 
@@ -347,12 +303,14 @@ async function fetchShipmentById(id) {
   return fromRow(data, historyMap.get(String(data.id)) || []);
 }
 
-async function insertMovementRow({ shipmentId, location, status, note, createdAt = null }) {
+async function insertMovementRow({ shipmentId, location, status, note, createdAt = null, movementType = 'manual', simulated = false }) {
   const payload = {
     shipment_id: shipmentId,
     location: String(location || 'Logistics Hub').trim() || 'Logistics Hub',
-    status: statusLabel(status),
-    note: String(note || '').trim() || null
+    status: normalizeStatus(status),
+    note: String(note || '').trim() || null,
+    movement_type: movementType,
+    is_simulated: Boolean(simulated)
   };
   if (createdAt) payload.created_at = createdAt;
   const { data, error } = await supabase
@@ -364,32 +322,67 @@ async function insertMovementRow({ shipmentId, location, status, note, createdAt
   return data;
 }
 
-async function refreshShipmentFromLatestMovement(shipmentId, fallbackRow = null) {
-  const source = fallbackRow || (await supabase.from(SHIPMENT_TABLE).select('*').eq('id', shipmentId).maybeSingle()).data;
-  if (!source) return null;
-  const movementPlan = parseJson(source.movement_plan, buildMovementPlan());
-  const { data: latestRows, error } = await supabase
-    .from(MOVEMENT_TABLE)
-    .select('*')
-    .eq('shipment_id', shipmentId)
-    .order('created_at', { ascending: false })
-    .limit(1);
-  if (error) throw error;
-  const latest = latestRows?.[0] || null;
-  const normalized = normalizeStatus(latest?.status || source.status || 'processing');
-  const step = latest ? Math.max(statusStepIndex(normalized), Number(source.current_step || 0)) : Number(source.current_step || 0);
-  const baseDate = new Date();
-  const updatePayload = {
-    status: normalized,
-    current_location: latest?.location || source.current_location,
-    current_step: step,
-    estimated_delivery: normalized === 'delivered' ? baseDate.toISOString() : computeEstimatedDelivery(step, movementPlan, baseDate),
-    next_movement_at: ['delivered', 'deleted', 'paused'].includes(normalized) ? null : nextMovementAt(step, movementPlan, baseDate),
-    updated_at: baseDate.toISOString()
+function createShipmentPayload(body = {}, assignment = null) {
+  const createdAt = safeIso(body.createdAt || new Date().toISOString());
+  const startAt = safeIso(body.departureTime || body.departure_time || createdAt, createdAt);
+  const deliveryDeadline = body.expectedDeliveryDate
+    || body.expected_delivery_date
+    || body.estimatedArrival
+    || body.estimated_arrival
+    || body.estimated_delivery;
+
+  if (!deliveryDeadline) {
+    throw new Error('Expected delivery date is required to generate the shipment movement plan.');
+  }
+
+  const built = buildScheduledMovementPlan({
+    origin: body.origin,
+    destination: body.destination,
+    startAt,
+    deliveryDeadline
+  });
+
+  const plan = built.plan;
+  const firstEvent = plan[0];
+
+  return {
+    tracking_code: String(body.trackingCode || body.tracking_code || '').trim().toUpperCase(),
+    user_id: assignment?.userId || String(body.customerUserId || body.user_id || '').trim() || null,
+    full_name: assignment?.fullName || String(body.customerName || body.full_name || '').trim() || '',
+    email: (assignment?.email || body.customerEmail || body.email || '').trim().toLowerCase(),
+    phone: assignment?.phone || String(body.phone || '').trim() || '',
+    address: assignment?.address || String(body.address || '').trim() || '',
+    shipment_title: String(body.productName || body.shipment_title || 'Unnamed item').trim(),
+    product_category: String(body.productCategory || body.product_category || 'General cargo').trim(),
+    product_description: String(body.productDescription || body.product_description || '').trim(),
+    quantity: Number(body.quantity || 1),
+    weight: Number(body.weightKg || body.weight || 1),
+    value_usd: Number(body.valueUsd || body.value_usd || 0),
+    origin: String(body.origin || '—').trim() || '—',
+    destination: String(body.destination || '—').trim() || '—',
+    status: normalizeStatus(firstEvent?.status || 'processing'),
+    status_control: 'active',
+    current_location: firstEvent?.location || 'Origin Facility',
+    estimated_delivery: built.deliveryDeadline,
+    delivery_deadline: built.deliveryDeadline,
+    departure_time: startAt,
+    paused_reason: '',
+    pause_started_at: null,
+    notes: String(body.notes || '').trim(),
+    shipping_mode: String(body.shippingMode || body.shipping_mode || 'Express').trim(),
+    priority: String(body.priority || 'Priority').trim(),
+    confirmed_by_customer: false,
+    current_step: Number(firstEvent?.major_step_index || 0),
+    current_event_index: 0,
+    total_events: built.totalEvents,
+    movement_plan: JSON.stringify(plan),
+    next_movement_at: built.nextMovementAt,
+    next_simulation_at: built.nextSimulationAt,
+    movement_step_interval_hours: built.stepIntervalHours,
+    created_at: createdAt,
+    updated_at: createdAt,
+    deleted_at: null
   };
-  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(updatePayload).eq('id', shipmentId);
-  if (updateError) throw updateError;
-  return fetchShipmentById(shipmentId);
 }
 
 function broadcastRefresh(reason = 'shipments:refresh', shipmentId = null) {
@@ -401,79 +394,224 @@ function broadcastRefresh(reason = 'shipments:refresh', shipmentId = null) {
   }
 }
 
-async function progressShipmentRow(row) {
-  const movementPlan = parseJson(row.movement_plan, buildMovementPlan());
-  let currentStep = Number(row.current_step || 0);
-  let cursor = row.next_movement_at ? new Date(row.next_movement_at) : null;
-  let lastRow = row;
-  const now = new Date();
-  if (!cursor) return false;
-  let changed = false;
+async function updateShipmentPointersAndState(row, plan, nextIndexOverride = null) {
+  const currentIndex = nextIndexOverride == null ? Number(row.current_event_index || 0) : Number(nextIndexOverride);
+  const currentEvent = getCurrentEvent(plan, currentIndex);
+  const nextPointers = getNextPointers(plan, currentIndex);
+  const delivered = currentIndex >= Math.max(plan.length - 1, 0) || normalizeStatus(currentEvent?.status || row.status) === 'delivered';
+  const payload = {
+    current_event_index: currentIndex,
+    current_step: Number(currentEvent?.major_step_index || row.current_step || 0),
+    current_location: currentEvent?.location || row.current_location,
+    status: delivered ? 'delivered' : normalizeStatus(currentEvent?.status || row.status),
+    estimated_delivery: getDeliveryEta(plan) || row.estimated_delivery,
+    delivery_deadline: getDeliveryEta(plan) || row.delivery_deadline || row.estimated_delivery,
+    next_movement_at: delivered ? null : nextPointers.nextMovementAt,
+    next_simulation_at: delivered ? null : nextPointers.nextSimulationAt,
+    total_events: plan.length,
+    movement_plan: JSON.stringify(plan),
+    updated_at: new Date().toISOString()
+  };
+  const { data, error } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', row.id).select('*').single();
+  if (error) throw error;
+  return data;
+}
 
-  while (cursor && cursor.getTime() <= now.getTime() && currentStep < movementPlan.length - 1) {
-    const nextStep = currentStep + 1;
-    const step = movementPlan[nextStep];
+async function processDueEventsForShipment(row, eventType) {
+  const plan = getRowPlan(row);
+  if (!plan.length) return false;
+
+  let currentIndex = Number(row.current_event_index || 0);
+  let changed = false;
+  const nowMs = Date.now();
+
+  while (currentIndex + 1 < plan.length) {
+    const nextEvent = plan[currentIndex + 1];
+    const dueAtMs = new Date(nextEvent.scheduledFor || nextEvent.scheduled_for).getTime();
+    if (Number.isNaN(dueAtMs) || dueAtMs > nowMs) break;
+    if ((nextEvent.eventType || nextEvent.event_type) !== eventType) break;
+
     await insertMovementRow({
       shipmentId: row.id,
-      location: step.location,
-      status: step.status,
-      note: step.note,
-      createdAt: cursor.toISOString()
+      location: nextEvent.location,
+      status: nextEvent.status,
+      note: nextEvent.note,
+      createdAt: nextEvent.scheduledFor || nextEvent.scheduled_for,
+      movementType: eventType,
+      simulated: eventType === 'micro'
     });
 
-    const delivered = normalizeStatus(step.status) === 'delivered';
-    const updatePayload = {
-      status: normalizeStatus(step.status),
-      current_location: step.location,
-      current_step: nextStep,
-      estimated_delivery: delivered ? cursor.toISOString() : computeEstimatedDelivery(nextStep, movementPlan, cursor),
-      next_movement_at: delivered ? null : new Date(cursor.getTime() + TRACKING_STEP_MS).toISOString(),
-      updated_at: now.toISOString()
-    };
-
-    const { data, error } = await supabase
-      .from(SHIPMENT_TABLE)
-      .update(updatePayload)
-      .eq('id', row.id)
-      .select('*')
-      .single();
-    if (error) throw error;
-    lastRow = data;
-    currentStep = nextStep;
-    cursor = updatePayload.next_movement_at ? new Date(updatePayload.next_movement_at) : null;
+    currentIndex += 1;
     changed = true;
   }
 
-  if (changed) {
-    broadcastRefresh('movement-engine', row.id);
-  }
-  return changed;
+  if (!changed) return false;
+
+  await updateShipmentPointersAndState(row, plan, currentIndex);
+  broadcastRefresh(eventType === 'major' ? 'movement-engine' : 'simulation-engine', row.id);
+  return true;
 }
 
-async function runMovementEngine() {
-  if (!DB_READY || engineBusy) return;
-  engineBusy = true;
+async function runMajorMovementEngine() {
+  if (!DB_READY || majorEngineBusy) return;
+  majorEngineBusy = true;
   try {
     const nowIso = new Date().toISOString();
     const { data, error } = await supabase
       .from(SHIPMENT_TABLE)
       .select('*')
+      .eq('status_control', 'active')
       .not('next_movement_at', 'is', null)
       .lte('next_movement_at', nowIso)
-      .neq('status', 'delivered')
       .neq('status', 'deleted')
-      .neq('status', 'paused')
+      .neq('status', 'delivered')
       .order('next_movement_at', { ascending: true })
       .limit(100);
     if (error) throw error;
     for (const row of data || []) {
-      await progressShipmentRow(row);
+      await processDueEventsForShipment(row, 'major');
     }
   } catch (error) {
-    logDbError('Movement engine tick failed', error);
+    logDbError('Hourly movement engine tick failed', error);
   } finally {
-    engineBusy = false;
+    majorEngineBusy = false;
   }
+}
+
+async function runSimulationEngine() {
+  if (!DB_READY || simulationEngineBusy) return;
+  simulationEngineBusy = true;
+  try {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+      .from(SHIPMENT_TABLE)
+      .select('*')
+      .eq('status_control', 'active')
+      .not('next_simulation_at', 'is', null)
+      .lte('next_simulation_at', nowIso)
+      .neq('status', 'deleted')
+      .neq('status', 'delivered')
+      .order('next_simulation_at', { ascending: true })
+      .limit(100);
+    if (error) throw error;
+    for (const row of data || []) {
+      await processDueEventsForShipment(row, 'micro');
+    }
+  } catch (error) {
+    logDbError('4-hour simulation engine tick failed', error);
+  } finally {
+    simulationEngineBusy = false;
+  }
+}
+
+async function pauseShipment(shipmentId, reason = '') {
+  const { data: existing, error: fetchError } = await supabase
+    .from(SHIPMENT_TABLE)
+    .select('*')
+    .eq('id', shipmentId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!existing) throw new Error('Shipment not found.');
+
+  if (existing.status_control === 'paused') return fetchShipmentById(shipmentId);
+
+  const nowIso = new Date().toISOString();
+  const pauseReason = String(reason || 'Shipment temporarily on hold').trim() || 'Shipment temporarily on hold';
+  const payload = {
+    status: 'paused',
+    status_control: 'paused',
+    paused_reason: pauseReason,
+    pause_started_at: nowIso,
+    updated_at: nowIso
+  };
+
+  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', shipmentId);
+  if (updateError) throw updateError;
+
+  await insertMovementRow({
+    shipmentId,
+    location: existing.current_location || getCurrentShipmentEvent(existing)?.location || 'Logistics Hub',
+    status: 'paused',
+    note: 'Shipment temporarily on hold',
+    movementType: 'control',
+    simulated: false
+  });
+
+  broadcastRefresh('shipment-paused', shipmentId);
+  return fetchShipmentById(shipmentId);
+}
+
+async function resumeShipment(shipmentId) {
+  const { data: existing, error: fetchError } = await supabase
+    .from(SHIPMENT_TABLE)
+    .select('*')
+    .eq('id', shipmentId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!existing) throw new Error('Shipment not found.');
+
+  const now = new Date();
+  const pausedAt = existing.pause_started_at ? new Date(existing.pause_started_at) : null;
+  const pausedForMs = pausedAt && !Number.isNaN(pausedAt.getTime()) ? Math.max(now.getTime() - pausedAt.getTime(), 0) : 0;
+  const plan = shiftFutureEvents(getRowPlan(existing), Number(existing.current_event_index || 0), pausedForMs);
+  const nextPointers = getNextPointers(plan, Number(existing.current_event_index || 0));
+  const currentEvent = getCurrentEvent(plan, Number(existing.current_event_index || 0));
+  const resumedStatus = normalizeStatus(currentEvent?.status || 'in_transit') === 'processing' ? 'in_transit' : normalizeStatus(currentEvent?.status || 'in_transit');
+
+  const payload = {
+    status: resumedStatus === 'paused' ? 'in_transit' : resumedStatus,
+    status_control: 'active',
+    paused_reason: '',
+    pause_started_at: null,
+    estimated_delivery: getDeliveryEta(plan) || existing.estimated_delivery,
+    delivery_deadline: getDeliveryEta(plan) || existing.delivery_deadline || existing.estimated_delivery,
+    movement_plan: JSON.stringify(plan),
+    total_events: plan.length,
+    next_movement_at: nextPointers.nextMovementAt,
+    next_simulation_at: nextPointers.nextSimulationAt,
+    updated_at: now.toISOString()
+  };
+
+  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', shipmentId);
+  if (updateError) throw updateError;
+
+  await insertMovementRow({
+    shipmentId,
+    location: existing.current_location || currentEvent?.location || 'Logistics Hub',
+    status: 'in_transit',
+    note: 'Shipment movement resumed',
+    movementType: 'control',
+    simulated: false
+  });
+
+  broadcastRefresh('shipment-resumed', shipmentId);
+  return fetchShipmentById(shipmentId);
+}
+
+async function refreshShipmentFromLatestMovement(shipmentId, fallbackRow = null) {
+  const source = fallbackRow || (await supabase.from(SHIPMENT_TABLE).select('*').eq('id', shipmentId).maybeSingle()).data;
+  if (!source) return null;
+  const plan = getRowPlan(source);
+  const { data: latestRows, error } = await supabase
+    .from(MOVEMENT_TABLE)
+    .select('*')
+    .eq('shipment_id', shipmentId)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  const latest = latestRows?.[0] || null;
+  const currentIndex = Number(source.current_event_index || 0);
+  const nextPointers = getNextPointers(plan, currentIndex);
+  const payload = {
+    status: normalizeStatus(latest?.status || source.status || 'processing'),
+    current_location: latest?.location || source.current_location,
+    next_movement_at: source.status_control === 'paused' ? source.next_movement_at : nextPointers.nextMovementAt,
+    next_simulation_at: source.status_control === 'paused' ? source.next_simulation_at : nextPointers.nextSimulationAt,
+    updated_at: new Date().toISOString()
+  };
+  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', shipmentId);
+  if (updateError) throw updateError;
+  return fetchShipmentById(shipmentId);
 }
 
 app.get('/api/runtime', (req, res) => res.json({
@@ -579,13 +717,16 @@ app.post('/api/shipments', requireAdmin, async (req, res) => {
     const { data, error } = await supabase.from(SHIPMENT_TABLE).insert(payload).select('*').single();
     if (error) throw error;
 
-    const plan = parseJson(data.movement_plan, buildMovementPlan());
+    const plan = getRowPlan(data);
+    const firstEvent = plan[0];
     await insertMovementRow({
       shipmentId: data.id,
-      location: plan[0].location,
-      status: plan[0].status,
-      note: plan[0].note,
-      createdAt: data.created_at
+      location: firstEvent?.location,
+      status: firstEvent?.status,
+      note: firstEvent?.note,
+      createdAt: data.created_at,
+      movementType: 'major',
+      simulated: false
     });
 
     const shipment = await fetchShipmentById(data.id);
@@ -593,6 +734,28 @@ app.post('/api/shipments', requireAdmin, async (req, res) => {
     res.json({ shipment });
   } catch (error) {
     logDbError('Create shipment failed', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/shipments/:id/pause', requireAdmin, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+  try {
+    const shipment = await pauseShipment(Number(req.params.id), req.body?.reason || req.body?.pausedReason || req.body?.paused_reason || '');
+    res.json({ shipment });
+  } catch (error) {
+    logDbError('Pause shipment failed', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/shipments/:id/resume', requireAdmin, async (req, res) => {
+  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+  try {
+    const shipment = await resumeShipment(Number(req.params.id));
+    res.json({ shipment });
+  } catch (error) {
+    logDbError('Resume shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -633,22 +796,42 @@ app.patch('/api/shipments/:id', async (req, res) => {
 
     if (!isAdmin(req)) return res.status(403).json({ error: 'Admin required.' });
 
-    const movementPlan = parseJson(existing.movement_plan, buildMovementPlan());
     const nextStatus = req.body?.status ? normalizeStatus(req.body.status) : normalizeStatus(existing.status);
-    const nextStep = req.body?.status ? Math.max(statusStepIndex(nextStatus), Number(existing.current_step || 0)) : Number(existing.current_step || 0);
-    const now = new Date();
+    if (nextStatus === 'paused') {
+      const shipment = await pauseShipment(Number(req.params.id), req.body?.pausedReason || req.body?.paused_reason || 'Shipment temporarily on hold');
+      return res.json({ shipment });
+    }
+    if (existing.status_control === 'paused' && nextStatus !== 'paused') {
+      await resumeShipment(Number(req.params.id));
+    }
+
+    let plan = getRowPlan(existing);
+    if (req.body?.estimatedArrival || req.body?.estimated_arrival || req.body?.estimated_delivery) {
+      const newDeadline = safeIso(req.body.estimatedArrival || req.body.estimated_arrival || req.body.estimated_delivery);
+      const currentEta = getDeliveryEta(plan) || existing.estimated_delivery;
+      const deltaMs = new Date(newDeadline).getTime() - new Date(currentEta).getTime();
+      plan = shiftFutureEvents(plan, Number(existing.current_event_index || 0), deltaMs);
+    }
+
+    const nextPointers = getNextPointers(plan, Number(existing.current_event_index || 0));
+    const nowIso = new Date().toISOString();
     const updatePayload = {
       status: nextStatus,
+      status_control: nextStatus === 'deleted' ? 'active' : (existing.status_control === 'paused' ? 'active' : existing.status_control || 'active'),
       current_location: String(req.body?.currentLocation || req.body?.current_location || existing.current_location || '').trim() || existing.current_location,
-      estimated_delivery: nextStatus === 'delivered'
-        ? now.toISOString()
-        : (req.body?.estimatedArrival || req.body?.estimated_delivery || computeEstimatedDelivery(nextStep, movementPlan, now)),
-      departure_time: req.body?.departureTime || req.body?.departure_time || existing.departure_time || now.toISOString(),
-      paused_reason: req.body?.pausedReason ?? req.body?.paused_reason ?? existing.paused_reason ?? '',
+      estimated_delivery: nextStatus === 'delivered' ? nowIso : (getDeliveryEta(plan) || existing.estimated_delivery),
+      delivery_deadline: getDeliveryEta(plan) || existing.delivery_deadline || existing.estimated_delivery,
+      departure_time: req.body?.departureTime || req.body?.departure_time || existing.departure_time || existing.created_at,
+      paused_reason: req.body?.pausedReason ?? req.body?.paused_reason ?? (nextStatus === 'paused' ? 'Shipment temporarily on hold' : ''),
+      pause_started_at: null,
       notes: req.body?.notes ?? existing.notes ?? '',
-      current_step: nextStep,
-      next_movement_at: ['delivered', 'deleted', 'paused'].includes(nextStatus) ? null : nextMovementAt(nextStep, movementPlan, now),
-      updated_at: now.toISOString()
+      current_step: Number(existing.current_step || 0),
+      current_event_index: Number(existing.current_event_index || 0),
+      total_events: plan.length,
+      movement_plan: JSON.stringify(plan),
+      next_movement_at: ['delivered', 'deleted'].includes(nextStatus) ? null : nextPointers.nextMovementAt,
+      next_simulation_at: ['delivered', 'deleted'].includes(nextStatus) ? null : nextPointers.nextSimulationAt,
+      updated_at: nowIso
     };
 
     const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(updatePayload).eq('id', req.params.id);
@@ -660,7 +843,9 @@ app.patch('/api/shipments/:id', async (req, res) => {
         shipmentId: Number(req.params.id),
         location: updatePayload.current_location,
         status: nextStatus,
-        note: String(req.body?.historyDetail || req.body?.notes || statusLabel(nextStatus)).trim()
+        note: String(req.body?.historyDetail || req.body?.notes || statusLabel(nextStatus)).trim(),
+        movementType: 'manual',
+        simulated: false
       });
     }
 
@@ -681,10 +866,6 @@ app.patch('/api/shipments/:id/customer', requireAdmin, async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Shipment not found.' });
 
     const statusOverride = req.body?.statusOverride ? normalizeStatus(req.body.statusOverride) : null;
-    const nextStep = statusOverride ? Math.max(statusStepIndex(statusOverride), Number(existing.current_step || 0)) : Number(existing.current_step || 0);
-    const movementPlan = parseJson(existing.movement_plan, buildMovementPlan());
-    const now = new Date();
-
     const payload = {
       full_name: String(req.body?.fullName ?? req.body?.full_name ?? existing.full_name ?? '').trim(),
       email: String(req.body?.email ?? existing.email ?? '').trim().toLowerCase(),
@@ -692,12 +873,7 @@ app.patch('/api/shipments/:id/customer', requireAdmin, async (req, res) => {
       destination: String(req.body?.destination ?? existing.destination ?? '').trim(),
       address: String(req.body?.address ?? existing.address ?? '').trim(),
       status: statusOverride || existing.status,
-      current_step: nextStep,
-      estimated_delivery: statusOverride && statusOverride !== 'delivered'
-        ? computeEstimatedDelivery(nextStep, movementPlan, now)
-        : (statusOverride === 'delivered' ? now.toISOString() : existing.estimated_delivery),
-      next_movement_at: statusOverride ? (['delivered', 'deleted', 'paused'].includes(statusOverride) ? null : nextMovementAt(nextStep, movementPlan, now)) : existing.next_movement_at,
-      updated_at: now.toISOString()
+      updated_at: new Date().toISOString()
     };
 
     const assignment = await fetchUserAssignment(payload.email, existing.user_id || '');
@@ -714,7 +890,9 @@ app.patch('/api/shipments/:id/customer', requireAdmin, async (req, res) => {
         shipmentId: Number(req.params.id),
         location: existing.current_location || 'Logistics Hub',
         status: statusOverride,
-        note: `Admin status override applied: ${statusLabel(statusOverride)}.`
+        note: `Admin status override applied: ${statusLabel(statusOverride)}.`,
+        movementType: 'manual',
+        simulated: false
       });
     }
 
@@ -755,18 +933,19 @@ app.post('/api/shipments/:id/movements', requireAdmin, async (req, res) => {
     const status = normalizeStatus(req.body?.status || shipment.status);
     const location = String(req.body?.location || shipment.current_location || 'Logistics Hub').trim() || 'Logistics Hub';
     const note = String(req.body?.note || req.body?.detail || '').trim();
-    await insertMovementRow({ shipmentId: Number(req.params.id), location, status, note: note || `Manual tracking update: ${statusLabel(status)}.` });
+    await insertMovementRow({
+      shipmentId: Number(req.params.id),
+      location,
+      status,
+      note: note || `Manual tracking update: ${statusLabel(status)}.`,
+      movementType: 'manual',
+      simulated: false
+    });
 
-    const movementPlan = parseJson(shipment.movement_plan, buildMovementPlan());
-    const nextStep = Math.max(statusStepIndex(status), Number(shipment.current_step || 0));
-    const baseDate = new Date();
     const updatePayload = {
       status,
       current_location: location,
-      current_step: nextStep,
-      estimated_delivery: status === 'delivered' ? baseDate.toISOString() : computeEstimatedDelivery(nextStep, movementPlan, baseDate),
-      next_movement_at: ['delivered', 'deleted', 'paused'].includes(status) ? null : nextMovementAt(nextStep, movementPlan, baseDate),
-      updated_at: baseDate.toISOString()
+      updated_at: new Date().toISOString()
     };
     const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(updatePayload).eq('id', req.params.id);
     if (updateError) throw updateError;
@@ -789,7 +968,7 @@ app.patch('/api/shipments/:id/movements/:movementId', requireAdmin, async (req, 
 
     const payload = {
       location: String(req.body?.location || movement.location || 'Logistics Hub').trim() || 'Logistics Hub',
-      status: statusLabel(req.body?.status || movement.status),
+      status: normalizeStatus(req.body?.status || movement.status),
       note: String(req.body?.note ?? movement.note ?? '').trim() || null
     };
 
@@ -867,8 +1046,10 @@ server.listen(PORT, async () => {
     const { error } = await supabase.from(SHIPMENT_TABLE).select('id').limit(1);
     if (error) throw error;
     console.log('[VeloxShip] Database connection verified.');
-    await runMovementEngine();
-    setInterval(runMovementEngine, ENGINE_TICK_MS);
+    await runSimulationEngine();
+    await runMajorMovementEngine();
+    setInterval(runSimulationEngine, ENGINE_POLL_MS);
+    setInterval(runMajorMovementEngine, ENGINE_POLL_MS);
   } catch (error) {
     logDbError('DB check failed', error);
   }

@@ -120,6 +120,26 @@ function extractShipmentHistory(row, meta) {
   }));
 }
 
+function normalizeMovementPlan(rawPlan) {
+  let plan = rawPlan;
+  if (typeof plan === 'string') {
+    try { plan = JSON.parse(plan); } catch (error) {
+      logDataError('Failed to parse shipment movement plan.', error, plan);
+      plan = [];
+    }
+  }
+  if (!Array.isArray(plan)) return [];
+  return plan.map(event => ({
+    ...event,
+    scheduledAt: event.scheduledAt || event.scheduled_for || null,
+    eventType: event.eventType || event.event_type || 'major',
+    eventIndex: Number(event.eventIndex ?? event.event_index ?? 0),
+    majorStepIndex: Number(event.majorStepIndex ?? event.major_step_index ?? 0),
+    progressPercent: Number(event.progressPercent ?? event.progress_percent ?? 0)
+  }));
+}
+
+
 /* ── Status stages ── */
 const STAGES = [
   { key: 'processing',        label: 'Processing',          progress: 12 },
@@ -310,6 +330,7 @@ function normalizeShipment(row) {
   if (!row) return null;
   const meta = parseShipmentMeta(row);
   const history = extractShipmentHistory(row, meta);
+  const movementPlan = normalizeMovementPlan(row.movementPlan || row.movement_plan || meta.movementPlan || []);
   return {
     id: row.id || meta.id || vsUid('shp'),
     trackingCode: row.trackingCode || row.tracking_code || meta.trackingCode || '',
@@ -326,24 +347,35 @@ function normalizeShipment(row) {
     valueUsd: Number(row.valueUsd ?? row.value_usd ?? meta.valueUsd ?? 0),
     origin: row.origin || meta.origin || '—',
     destination: row.destination || meta.destination || '—',
-    currentLocation: row.currentLocation || row.current_location || meta.currentLocation || row.origin || 'Origin hub',
+    currentLocation: row.currentLocation || row.current_location || meta.currentLocation || movementPlan[0]?.location || row.origin || 'Origin hub',
     shippingMode: row.shippingMode || row.shipping_mode || meta.shippingMode || 'Express',
     priority: row.priority || meta.priority || 'Priority',
     status: normalizeStatusValue(row.status || row.Status || meta.status || 'processing'),
+    statusControl: row.statusControl || row.status_control || meta.statusControl || 'active',
     pausedReason: row.pausedReason || row.paused_reason || meta.pausedReason || '',
+    pausedAt: row.pausedAt || row.pause_started_at || meta.pausedAt || null,
     pausedProgress: row.pausedProgress ?? row.paused_progress ?? meta.pausedProgress ?? null,
     departureTime: row.departureTime || row.departure_time || meta.departureTime || null,
     estimatedArrival: row.estimatedArrival || row.estimated_arrival || row.estimated_delivery || meta.estimatedArrival || null,
+    deliveryDeadline: row.deliveryDeadline || row.delivery_deadline || meta.deliveryDeadline || row.estimated_delivery || null,
     createdAt: row.createdAt || row.created_at || meta.createdAt || new Date().toISOString(),
+    updatedAt: row.updatedAt || row.updated_at || meta.updatedAt || new Date().toISOString(),
     notes: row.notes || meta.notes || '',
     confirmedByCustomer: Boolean(row.confirmedByCustomer ?? row.confirmed_by_customer ?? meta.confirmedByCustomer),
     deleted: Boolean(row.deleted ?? meta.deleted ?? (normalizeStatusValue(row.status || row.Status || meta.status) === 'deleted')),
     deletedAt: row.deleted_at || meta.deletedAt || null,
-    currentStep: Number(row.currentStep ?? row.current_step ?? meta.currentStep ?? (history.length ? history.length - 1 : 0)),
-    totalSteps: Number(row.totalSteps ?? row.total_steps ?? meta.totalSteps ?? 6),
+    currentStep: Number(row.currentStep ?? row.current_step ?? meta.currentStep ?? 0),
+    currentEventIndex: Number(row.currentEventIndex ?? row.current_event_index ?? meta.currentEventIndex ?? (history.length ? history.length - 1 : 0)),
+    totalSteps: Number(row.totalSteps ?? row.total_steps ?? meta.totalSteps ?? movementPlan.length ?? 0),
+    totalEvents: Number(row.totalEvents ?? row.total_events ?? meta.totalEvents ?? movementPlan.length ?? 0),
+    nextMovementAt: row.nextMovementAt || row.next_movement_at || meta.nextMovementAt || null,
+    nextSimulationAt: row.nextSimulationAt || row.next_simulation_at || meta.nextSimulationAt || null,
+    stepIntervalHours: Number(row.stepIntervalHours ?? row.movement_step_interval_hours ?? meta.stepIntervalHours ?? 0),
+    movementPlan,
     history: Array.isArray(history) ? history : []
   };
 }
+
 
 function mergeShipmentIntoCache(shipment) {
   const n = normalizeShipment(shipment);
@@ -357,22 +389,51 @@ function mergeShipmentIntoCache(shipment) {
 
 /* ── Progress ── */
 function computeShipmentProgress(shipment) {
+  if (!shipment) return 0;
   if (shipment.status === 'delivered' || shipment.status === 'deleted') return 100;
-  if (shipment.status === 'paused' && shipment.pausedProgress != null)
+
+  const plan = Array.isArray(shipment.movementPlan) ? shipment.movementPlan : [];
+  const currentIndex = clamp(Number(shipment.currentEventIndex ?? shipment.currentStep ?? 0), 0, Math.max(plan.length - 1, 0));
+
+  if (plan.length > 1) {
+    const base = (currentIndex / (plan.length - 1)) * 100;
+    const active = shipment.status !== 'paused' && shipment.statusControl !== 'paused';
+    if (!active || currentIndex >= plan.length - 1) {
+      return clamp(shipment.status === 'paused' && shipment.pausedProgress != null ? shipment.pausedProgress : base, 0, 100);
+    }
+
+    const currentEvent = plan[currentIndex];
+    const nextEvent = plan[currentIndex + 1];
+    const currentTime = new Date(currentEvent?.scheduledAt || currentEvent?.scheduled_for || shipment.createdAt).getTime();
+    const nextTime = new Date(nextEvent?.scheduledAt || nextEvent?.scheduled_for || shipment.estimatedArrival || shipment.deliveryDeadline).getTime();
+    if (Number.isFinite(currentTime) && Number.isFinite(nextTime) && nextTime > currentTime) {
+      const ratio = clamp((Date.now() - currentTime) / (nextTime - currentTime), 0, 1);
+      const nextProgress = ((currentIndex + 1) / (plan.length - 1)) * 100;
+      return clamp(base + (nextProgress - base) * ratio, 0, 100);
+    }
+    return clamp(base, 0, 100);
+  }
+
+  if (shipment.status === 'paused' && shipment.pausedProgress != null) {
     return clamp(shipment.pausedProgress, 8, 96);
+  }
+
   const stageP = getStatusMeta(shipment.status).progress;
-  const start  = new Date(shipment.departureTime || shipment.createdAt).getTime();
-  const end    = new Date(shipment.estimatedArrival).getTime();
+  const start = new Date(shipment.departureTime || shipment.createdAt).getTime();
+  const end = new Date(shipment.estimatedArrival || shipment.deliveryDeadline).getTime();
   if (!start || !end || end <= start) return clamp(stageP, 8, 96);
-  const ratio   = clamp((Date.now() - start) / (end - start), 0, 1);
-  const timeP   = 10 + ratio * 86;
-  if (shipment.status === 'processing')       return clamp(Math.min(timeP, 22), 10, 22);
-  if (shipment.status === 'confirmed')        return clamp(Math.min(timeP, 35), 18, 35);
-  if (shipment.status === 'in_transit')       return clamp(Math.max(timeP, 42), 42, 76);
-  if (shipment.status === 'customs')          return clamp(Math.max(timeP, 68), 68, 85);
-  if (shipment.status === 'out_for_delivery') return clamp(Math.max(timeP, 86), 86, 98);
-  return clamp(Math.max(stageP, timeP), 8, 96);
+  const ratio = clamp((Date.now() - start) / (end - start), 0, 1);
+  return clamp(10 + ratio * 86, 8, 96);
 }
+
+function isShipmentMotionActive(shipment) {
+  return Boolean(
+    shipment
+    && shipment.statusControl !== 'paused'
+    && !['paused', 'delivered', 'deleted'].includes(shipment.status)
+  );
+}
+
 
 /* ── ETA countdown ── */
 function calcEtaBreakdown(iso) {
@@ -1000,21 +1061,32 @@ function refreshLiveTelemetry(scope = document) {
     if (!shipment) return;
     node.textContent = getShipmentEtaText(shipment);
   });
-  scope.querySelectorAll('[data-progress-shipment]').forEach(n => {
-    const s = getAllShipments().find(s => s.id === n.dataset.progressShipment);
-    if (!s) return;
-    const p = computeShipmentProgress(s);
-    n.style.setProperty('--progress', `${p}%`);
-    const bar = n.closest('.shipment-progress-wrap')?.querySelector('.shipment-progress > span');
-    if (bar) bar.style.width = `${p}%`;
+
+  scope.querySelectorAll('[data-progress-shipment]').forEach(lane => {
+    const shipment = getAllShipments().find(item => String(item.id) === String(lane.dataset.progressShipment));
+    if (!shipment) return;
+    const progress = computeShipmentProgress(shipment);
+    lane.style.setProperty('--progress', `${progress}%`);
+    const bar = lane.closest('.shipment-progress-wrap')?.querySelector('.shipment-progress > span');
+    if (bar) bar.style.width = `${progress}%`;
+
+    const marker = lane.querySelector('.truck-marker');
+    if (marker) {
+      const active = isShipmentMotionActive(shipment);
+      const phaseOn = Math.floor(Date.now() / 500) % 2 === 0;
+      marker.style.opacity = active ? (phaseOn ? '1' : '0.28') : '1';
+      marker.style.filter = active && phaseOn ? 'drop-shadow(0 0 8px rgba(37,99,235,.45))' : 'none';
+      marker.style.transform = active ? `translateY(${phaseOn ? '-1px' : '1px'})` : 'translateY(0)';
+    }
   });
+
   const el = document.getElementById('elapsedDisplay');
   if (el) {
     const shipId = el.closest('[data-shipment-id]')?.dataset?.shipmentId;
     if (!shipId) return;
-    const s = getAllShipments().find(s => s.id === shipId);
-    if (!s || !s.departureTime) return;
-    const diff = Date.now() - new Date(s.departureTime).getTime();
+    const shipment = getAllShipments().find(item => String(item.id) === String(shipId));
+    if (!shipment || !shipment.departureTime) return;
+    const diff = Date.now() - new Date(shipment.departureTime).getTime();
     if (diff < 0) { el.textContent = 'Not yet departed'; return; }
     const d = Math.floor(diff / 86400000);
     const h = Math.floor((diff % 86400000) / 3600000);
@@ -1127,6 +1199,7 @@ function loadSupabaseIntegration() {
 let realtimeSocket = null;
 let realtimeReconnectTimer = null;
 let fallbackRefreshTimer = null;
+let realtimeChannel = null;
 
 function dispatchShipmentRefresh() {
   window.dispatchEvent(new CustomEvent('veloxship:shipments-updated'));
@@ -1148,12 +1221,39 @@ function scheduleRealtimeReconnect() {
   realtimeReconnectTimer = setTimeout(startRealtimeSync, 3000);
 }
 
+async function startSupabaseRealtimeSync() {
+  const page = document.body?.dataset?.page || '';
+  const user = getCurrentUser();
+  if (!['admin', 'dashboard'].includes(page) || !user) return;
+
+  try {
+    const client = await ensureBrowserSupabase();
+    if (!client) return;
+
+    if (realtimeChannel?.unsubscribe) {
+      try { await realtimeChannel.unsubscribe(); } catch {}
+    }
+
+    realtimeChannel = client
+      .channel(`veloxship-live-${user.role}-${user.id || user.email || 'session'}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: window.__veloxshipRuntime.table || VS_SUPABASE_TABLE }, refreshShipmentsLive)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'movement_history' }, refreshShipmentsLive);
+
+    realtimeChannel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') refreshShipmentsLive();
+    });
+  } catch (error) {
+    logDataError('Supabase realtime init failed.', error);
+  }
+}
+
 function startRealtimeSync() {
   const page = document.body?.dataset?.page || '';
   const user = getCurrentUser();
   if (!['admin', 'dashboard'].includes(page) || !user) return;
   clearInterval(fallbackRefreshTimer);
   fallbackRefreshTimer = setInterval(refreshShipmentsLive, 7000);
+  startSupabaseRealtimeSync();
   try {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const query = new URLSearchParams({
@@ -1178,6 +1278,7 @@ function startRealtimeSync() {
     logDataError('Realtime sync init failed.', error);
   }
 }
+
 
 window.vsReady = loadSupabaseIntegration()
   .then(() => loadRuntimeConfig())
