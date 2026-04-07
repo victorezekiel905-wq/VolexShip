@@ -4,9 +4,9 @@ let dashboardUser = null;
 /* ── Stats ── */
 function renderDashboardStats(shipments) {
   const el = id => document.getElementById(id);
-  el('statTotal').textContent     = shipments.length;
-  el('statTransit').textContent   = shipments.filter(s => ['in_transit','customs','out_for_delivery'].includes(s.status)).length;
-  el('statPaused').textContent    = shipments.filter(s => s.status === 'paused').length;
+  el('statTotal').textContent = shipments.length;
+  el('statTransit').textContent = shipments.filter(s => ['confirmed', 'in_transit', 'customs', 'out_for_delivery'].includes(s.status)).length;
+  el('statPaused').textContent = shipments.filter(s => s.status === 'paused').length;
   el('statDelivered').textContent = shipments.filter(s => s.status === 'delivered').length;
 }
 
@@ -41,7 +41,7 @@ function renderMessages(user) {
   const host = document.getElementById('messagesHost');
   if (!host) return;
   const messages = getMessagesForUser(user.email);
-  const unread   = messages.filter(m => !m.readBy.includes(user.email.toLowerCase())).length;
+  const unread = messages.filter(m => !m.readBy.includes(user.email.toLowerCase())).length;
 
   const hdr = document.getElementById('msgBadge');
   if (hdr) hdr.textContent = unread > 0 ? `(${unread} new)` : '';
@@ -109,8 +109,8 @@ function renderRecentTimeline(shipments) {
     <div class="timeline-item">
       <div class="timeline-dot"></div>
       <div class="timeline-body">
-        <strong><span>${e.productName} · ${e.title}</span><span>${formatDateTime(e.time)}</span></strong>
-        <span>${e.location} · ${e.detail} · <code>${e.trackingCode}</code></span>
+        <strong><span>${formatDateTime(e.time)} — ${e.location}</span><span>${e.productName}</span></strong>
+        <span>Status: ${getStatusMeta(e.status).label}${e.note || e.detail ? ` · Note: ${e.note || e.detail}` : ''} · <code>${e.trackingCode}</code></span>
       </div>
     </div>`).join('');
 }
@@ -122,21 +122,24 @@ function installClaimForm(user) {
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const alert = document.getElementById('claimAlert');
-    const btn   = form.querySelector('button[type="submit"]');
-    const code  = document.getElementById('claimTrackingCode').value.trim();
-    btn.disabled = true; btn.textContent = 'Linking…';
+    const btn = form.querySelector('button[type="submit"]');
+    const code = document.getElementById('claimTrackingCode').value.trim();
+    btn.disabled = true;
+    btn.textContent = 'Linking…';
     try {
       const shipment = await claimTrackingCode(user, code);
-      alert.className   = 'alert success';
+      alert.className = 'alert success';
       alert.textContent = `${shipment.trackingCode} is now linked to your dashboard.`;
       document.getElementById('claimTrackingCode').value = '';
       showToast('Tracking confirmed and linked!', 'success');
+      await ensureShipmentsLoaded(true);
       refreshDashboard();
     } catch (err) {
-      alert.className   = 'alert error';
+      alert.className = 'alert error';
       alert.textContent = err.message;
     } finally {
-      btn.disabled = false; btn.textContent = 'Confirm tracking';
+      btn.disabled = false;
+      btn.textContent = 'Confirm tracking';
     }
   });
 }
@@ -162,11 +165,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshDashboard();
   installClaimForm(dashboardUser);
 
-  /* Poll for new messages and shipment updates every 15s */
+  window.addEventListener('veloxship:shipments-updated', refreshDashboard);
+
   setInterval(async () => {
     await ensureShipmentsLoaded(true);
     refreshDashboard();
-  }, 15000);
+  }, 7000);
 
   const modal = document.getElementById('shipmentModal');
   document.querySelectorAll('[data-close-shipment-modal]').forEach(btn =>
@@ -176,6 +180,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
   });
 
-  /* bind viewer for page-level buttons */
   bindShipmentViewers(document);
 });

@@ -20,13 +20,14 @@ window.__veloxshipCache   = { shipments: [], mode: 'loading' };
 window.__veloxshipRuntime = {
   dbReady: false,
   browserDbReady: false,
-  table: 'volex',
+  table: 'shipment',
   supabaseUrl: 'https://udjgrrjnyhaersaiuudj.supabase.co',
-  supabaseAnonKey: ''
+  supabaseAnonKey: '',
+  wsPath: '/ws'
 };
 
 const VS_SUPABASE_URL   = 'https://udjgrrjnyhaersaiuudj.supabase.co';
-const VS_SUPABASE_TABLE = 'volex';
+const VS_SUPABASE_TABLE = 'shipment';
 let browserSupabase     = null;
 
 function logDataError(scope, error, details) {
@@ -80,7 +81,7 @@ async function ensureBrowserSupabase() {
 function parseShipmentMeta(row) {
   if (!row) return {};
   const raw = row.movement_history ?? row.movementHistory ?? null;
-  if (!raw) return {};
+  if (!raw || Array.isArray(raw)) return {};
   if (typeof raw === 'object') return raw;
   try { return JSON.parse(raw); } catch (error) {
     logDataError('Failed to parse shipment movement_history.', error, raw);
@@ -88,16 +89,47 @@ function parseShipmentMeta(row) {
   }
 }
 
+function normalizeStatusValue(status) {
+  const raw = String(status || '').trim().toLowerCase();
+  if (!raw) return 'processing';
+  if (['pending', 'processing'].includes(raw)) return 'processing';
+  if (['confirmed', 'departed'].includes(raw)) return 'confirmed';
+  if (['in transit', 'in_transit'].includes(raw)) return 'in_transit';
+  if (['customs', 'customs review', 'arrived at facility', 'arrived_at_facility'].includes(raw)) return 'customs';
+  if (['out for delivery', 'out_for_delivery'].includes(raw)) return 'out_for_delivery';
+  if (raw === 'delivered') return 'delivered';
+  if (raw === 'paused') return 'paused';
+  if (raw === 'deleted') return 'deleted';
+  return raw.replace(/\s+/g, '_');
+}
+
+function extractShipmentHistory(row, meta) {
+  let history = row?.history ?? row?.movement_history ?? meta?.history ?? [];
+  if (typeof history === 'string') {
+    try { history = JSON.parse(history); } catch (error) {
+      logDataError('Failed to parse shipment history.', error, history);
+      history = [];
+    }
+  }
+  if (!Array.isArray(history)) return [];
+  return history.map(entry => ({
+    ...entry,
+    status: normalizeStatusValue(entry.status || entry.statusLabel || entry.title),
+    title: entry.title || entry.statusLabel || getStatusMeta(normalizeStatusValue(entry.status)).label,
+    detail: entry.detail || entry.note || `Status: ${getStatusMeta(normalizeStatusValue(entry.status)).label}`
+  }));
+}
+
 /* ── Status stages ── */
 const STAGES = [
-  { key: 'processing',        label: 'Processing',        progress: 12 },
-  { key: 'confirmed',         label: 'Confirmed',         progress: 25 },
-  { key: 'in_transit',        label: 'In Transit',        progress: 55 },
-  { key: 'customs',           label: 'Customs Review',    progress: 72 },
-  { key: 'out_for_delivery',  label: 'Out for Delivery',  progress: 90 },
-  { key: 'delivered',         label: 'Delivered',         progress: 100 },
-  { key: 'paused',            label: 'Paused',            progress: 55 },
-  { key: 'deleted',           label: 'Deleted',           progress: 100 }
+  { key: 'processing',        label: 'Processing',          progress: 12 },
+  { key: 'confirmed',         label: 'Departed',            progress: 25 },
+  { key: 'in_transit',        label: 'In Transit',          progress: 55 },
+  { key: 'customs',           label: 'Arrived at Facility', progress: 72 },
+  { key: 'out_for_delivery',  label: 'Out for Delivery',    progress: 90 },
+  { key: 'delivered',         label: 'Delivered',           progress: 100 },
+  { key: 'paused',            label: 'Paused',              progress: 55 },
+  { key: 'deleted',           label: 'Deleted',             progress: 100 }
 ];
 
 /* ── Helpers ── */
@@ -129,7 +161,7 @@ function getStatusMeta(status) {
     processing: 'info', confirmed: 'info', in_transit: 'warning',
     customs: 'warning', out_for_delivery: 'info', delivered: 'success', paused: 'danger', deleted: 'danger'
   };
-  return { ...stage, tone: toneMap[status] || 'info' };
+  return { ...stage, tone: toneMap[normalizeStatusValue(status)] || 'info' };
 }
 
 /* ── State (users, requests, messages) ── */
@@ -268,24 +300,20 @@ function getAllShipments() {
   );
 }
 function getUserShipments(user) {
-  return getAllShipments().filter(
-    s => (s.customerEmail || '').toLowerCase() === user.email.toLowerCase()
-  );
+  return getAllShipments().filter(shipment => {
+    if (user?.id && shipment.userId) return shipment.userId === user.id;
+    return (shipment.customerEmail || '').toLowerCase() === (user?.email || '').toLowerCase();
+  });
 }
 
 function normalizeShipment(row) {
   if (!row) return null;
   const meta = parseShipmentMeta(row);
-  let history = row.history ?? meta.history ?? [];
-  if (typeof history === 'string') {
-    try { history = JSON.parse(history); } catch (error) {
-      logDataError('Failed to parse shipment history.', error, history);
-      history = [];
-    }
-  }
+  const history = extractShipmentHistory(row, meta);
   return {
     id: row.id || meta.id || vsUid('shp'),
     trackingCode: row.trackingCode || row.tracking_code || meta.trackingCode || '',
+    userId: row.userId || row.user_id || meta.userId || '',
     customerEmail: row.customerEmail || row.customer_email || row.email || meta.customerEmail || '',
     customerName: row.customerName || row.customer_name || row.full_name || meta.customerName || '',
     phone: row.phone || meta.phone || '',
@@ -301,7 +329,7 @@ function normalizeShipment(row) {
     currentLocation: row.currentLocation || row.current_location || meta.currentLocation || row.origin || 'Origin hub',
     shippingMode: row.shippingMode || row.shipping_mode || meta.shippingMode || 'Express',
     priority: row.priority || meta.priority || 'Priority',
-    status: row.status || row.Status || meta.status || 'processing',
+    status: normalizeStatusValue(row.status || row.Status || meta.status || 'processing'),
     pausedReason: row.pausedReason || row.paused_reason || meta.pausedReason || '',
     pausedProgress: row.pausedProgress ?? row.paused_progress ?? meta.pausedProgress ?? null,
     departureTime: row.departureTime || row.departure_time || meta.departureTime || null,
@@ -309,8 +337,10 @@ function normalizeShipment(row) {
     createdAt: row.createdAt || row.created_at || meta.createdAt || new Date().toISOString(),
     notes: row.notes || meta.notes || '',
     confirmedByCustomer: Boolean(row.confirmedByCustomer ?? row.confirmed_by_customer ?? meta.confirmedByCustomer),
-    deleted: Boolean(row.deleted ?? meta.deleted ?? ((row.status || row.Status || meta.status || '').toString().toLowerCase() === 'deleted')),
+    deleted: Boolean(row.deleted ?? meta.deleted ?? (normalizeStatusValue(row.status || row.Status || meta.status) === 'deleted')),
     deletedAt: row.deleted_at || meta.deletedAt || null,
+    currentStep: Number(row.currentStep ?? row.current_step ?? meta.currentStep ?? (history.length ? history.length - 1 : 0)),
+    totalSteps: Number(row.totalSteps ?? row.total_steps ?? meta.totalSteps ?? 6),
     history: Array.isArray(history) ? history : []
   };
 }
@@ -348,14 +378,18 @@ function computeShipmentProgress(shipment) {
 function calcEtaBreakdown(iso) {
   if (!iso) return { text: 'ETA pending', expired: false };
   const diff = new Date(iso).getTime() - Date.now();
-  if (diff <= 0) return { text: 'Arrived', expired: true };
+  if (diff <= 0) return { text: 'Arriving now', expired: true };
   const d = Math.floor(diff / 86400000);
-  const h = Math.floor((diff % 86400000) / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  const s = Math.floor((diff % 60000) / 1000);
-  return { text: `${d}d ${h}h ${m}m ${s}s`, expired: false };
+  const h = Math.ceil((diff % 86400000) / 3600000);
+  return { text: `Arriving in ${d} day${d === 1 ? '' : 's'} ${h} hour${h === 1 ? '' : 's'}`, expired: false };
 }
 function calcEtaCountdown(iso) { return calcEtaBreakdown(iso).text; }
+function getShipmentEtaText(shipment) {
+  if (!shipment) return 'ETA pending';
+  if (shipment.status === 'delivered') return 'Delivered';
+  if (shipment.status === 'out_for_delivery') return 'Out for delivery';
+  return calcEtaCountdown(shipment.estimatedArrival);
+}
 
 /* ── Badges ── */
 function shipmentStatusBadge(status) {
@@ -408,7 +442,7 @@ function shipmentCardMarkup(shipment, options = {}) {
               <div class="shipment-code"><i class="fa-solid fa-barcode"></i>${shipment.trackingCode}</div>
             </div>
             <div class="stack shipment-top-actions">
-              <div class="timer-pill eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</div>
+              <div class="timer-pill eta-live" data-shipment-eta="${shipment.id}">${getShipmentEtaText(shipment)}</div>
               <button class="btn btn-secondary btn-sm" data-view-shipment="${shipment.id}">Open live view</button>
             </div>
           </div>
@@ -423,12 +457,12 @@ function shipmentCardMarkup(shipment, options = {}) {
           <div class="shipment-meta-grid">
             <div><label>Current location</label><strong>${shipment.currentLocation || '—'}</strong></div>
             <div><label>Takeoff</label><strong>${dept}</strong></div>
-            <div><label>ETA</label><strong class="eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</strong></div>
+            <div><label>ETA</label><strong class="eta-live" data-shipment-eta="${shipment.id}">${getShipmentEtaText(shipment)}</strong></div>
             <div><label>Priority</label><strong>${shipment.priority}</strong></div>
           </div>
           ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
           ${paused ? `<div class="status-banner"><i class="fa-solid fa-circle-pause"></i><div><strong>Movement paused</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
-          ${latest ? `<div class="timeline compact-timeline"><div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-body"><strong><span>${latest.title}</span><span>${formatDateTime(latest.time)}</span></strong><span>${latest.location} · ${latest.detail}</span></div></div></div>` : ''}
+          ${latest ? `<div class="timeline compact-timeline"><div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-body"><strong><span>${formatDateTime(latest.time)} — ${latest.location}</span><span>${latest.title}</span></strong><span>Status: ${getStatusMeta(latest.status).label}${latest.note || latest.detail ? ` · Note: ${latest.note || latest.detail}` : ''}</span></div></div></div>` : ''}
           ${actionMarkup}
         </div>
       </div>
@@ -454,8 +488,8 @@ function shipmentDetailMarkup(shipment) {
     <div class="timeline-item">
       <div class="timeline-dot ${e.status === 'delivered' ? 'success' : e.status === 'paused' ? 'danger' : ''}"></div>
       <div class="timeline-body">
-        <strong><span>${e.title}</span><span>${formatDateTime(e.time)}</span></strong>
-        <span>${e.location} · ${e.detail}</span>
+        <strong><span>${formatDateTime(e.time)} — ${e.location}</span><span>${getStatusMeta(e.status).label}</span></strong>
+        <span>Status: ${getStatusMeta(e.status).label}${e.note || e.detail ? ` · Note: ${e.note || e.detail}` : ''}</span>
       </div>
     </div>`).join('') || '<p class="muted">No movement events yet.</p>';
 
@@ -482,7 +516,7 @@ function shipmentDetailMarkup(shipment) {
         </div>
         <div class="flight-node right">
           <div class="flight-label">Arrival</div>
-          <div class="flight-value eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</div>
+          <div class="flight-value eta-live" data-shipment-eta="${shipment.id}">${getShipmentEtaText(shipment)}</div>
           <div class="flight-place">${shipment.destination}</div>
         </div>
       </div>
@@ -684,7 +718,7 @@ async function ensureShipmentsLoaded(force = false) {
       const u    = getCurrentUser();
       const data = ctx === 'admin'
         ? await apiFetch('/shipments', { headers: buildAdminHeaders() })
-        : await apiFetch('/shipments/mine', { headers: { 'x-customer-email': u?.email || '' } });
+        : await apiFetch('/shipments/mine', { headers: { 'x-customer-email': u?.email || '', 'x-customer-user-id': u?.id || '' } });
       const shipments = (data.shipments || []).map(normalizeShipment).filter(Boolean);
       window.__veloxshipCache.shipments = shipments;
       window.__veloxshipCache.mode = 'cloud';
@@ -781,6 +815,7 @@ async function createShipment(payload) {
           trackingCode: shipment.trackingCode,
           customerName: shipment.customerName,
           customerEmail: shipment.customerEmail,
+          customerUserId: payload.customerUserId || payload.userId || '',
           productName: shipment.productName,
           productCategory: shipment.productCategory,
           productDescription: shipment.productDescription,
@@ -922,6 +957,7 @@ async function claimTrackingCode(user, code) {
         body: JSON.stringify({
           claimTracking: true,
           customerEmail: next.customerEmail,
+          customerUserId: user?.id || '',
           customerName: next.customerName,
           confirmedByCustomer: true,
           history: next.history
@@ -959,8 +995,10 @@ function showToast(message, tone = 'info') {
 
 /* ── Live telemetry ── */
 function refreshLiveTelemetry(scope = document) {
-  scope.querySelectorAll('[data-eta]').forEach(n => {
-    n.textContent = calcEtaCountdown(n.dataset.eta);
+  scope.querySelectorAll('[data-shipment-eta]').forEach(node => {
+    const shipment = getAllShipments().find(item => String(item.id) === String(node.dataset.shipmentEta));
+    if (!shipment) return;
+    node.textContent = getShipmentEtaText(shipment);
   });
   scope.querySelectorAll('[data-progress-shipment]').forEach(n => {
     const s = getAllShipments().find(s => s.id === n.dataset.progressShipment);
@@ -1058,7 +1096,10 @@ window.getStatusMeta      = getStatusMeta;
 window.getDataModeLabel   = getDataModeLabel;
 window.computeShipmentProgress = computeShipmentProgress;
 window.calcEtaCountdown   = calcEtaCountdown;
+window.getShipmentEtaText = getShipmentEtaText;
 window.refreshLiveTelemetry = refreshLiveTelemetry;
+window.vsApiFetch         = apiFetch;
+window.buildAdminHeaders  = buildAdminHeaders;
 
 /* ── Boot ── */
 function loadSupabaseIntegration() {
@@ -1083,6 +1124,61 @@ function loadSupabaseIntegration() {
   return window.__veloxshipSupabaseLoader;
 }
 
+let realtimeSocket = null;
+let realtimeReconnectTimer = null;
+let fallbackRefreshTimer = null;
+
+function dispatchShipmentRefresh() {
+  window.dispatchEvent(new CustomEvent('veloxship:shipments-updated'));
+}
+
+async function refreshShipmentsLive() {
+  const page = document.body?.dataset?.page || '';
+  if (!['admin', 'dashboard'].includes(page)) return;
+  try {
+    await ensureShipmentsLoaded(true);
+    dispatchShipmentRefresh();
+  } catch (error) {
+    logDataError('Live shipment refresh failed.', error);
+  }
+}
+
+function scheduleRealtimeReconnect() {
+  clearTimeout(realtimeReconnectTimer);
+  realtimeReconnectTimer = setTimeout(startRealtimeSync, 3000);
+}
+
+function startRealtimeSync() {
+  const page = document.body?.dataset?.page || '';
+  const user = getCurrentUser();
+  if (!['admin', 'dashboard'].includes(page) || !user) return;
+  clearInterval(fallbackRefreshTimer);
+  fallbackRefreshTimer = setInterval(refreshShipmentsLive, 7000);
+  try {
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const query = new URLSearchParams({
+      role: user.role,
+      email: user.email || '',
+      userId: user.id || '',
+      token: user.adminToken || ''
+    });
+    realtimeSocket?.close();
+    realtimeSocket = new WebSocket(`${protocol}://${location.host}${window.__veloxshipRuntime.wsPath || '/ws'}?${query.toString()}`);
+    realtimeSocket.addEventListener('message', event => {
+      try {
+        const payload = JSON.parse(event.data || '{}');
+        if (payload.type === 'refresh') refreshShipmentsLive();
+      } catch {}
+    });
+    realtimeSocket.addEventListener('close', scheduleRealtimeReconnect);
+    realtimeSocket.addEventListener('error', () => {
+      try { realtimeSocket.close(); } catch {}
+    });
+  } catch (error) {
+    logDataError('Realtime sync init failed.', error);
+  }
+}
+
 window.vsReady = loadSupabaseIntegration()
   .then(() => loadRuntimeConfig())
   .then(() => ensureShipmentsLoaded());
@@ -1091,4 +1187,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   readState();
   await window.vsReady;
   startLiveTelemetry();
+  startRealtimeSync();
 });
