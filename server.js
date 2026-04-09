@@ -205,6 +205,9 @@ function fromRow(row, historyRows = []) {
     status: normalizeStatus(row.status || legacyMeta.status || 'processing'),
     statusControl: row.status_control || legacyMeta.statusControl || 'active',
     pausedReason: row.paused_reason || legacyMeta.pausedReason || '',
+    resumeReason: row.resume_reason || legacyMeta.resumeReason || '',
+    pauseState: (row.status_control || legacyMeta.statusControl || 'active') === 'paused'
+      || normalizeStatus(row.status || legacyMeta.status || '') === 'paused',
     departureTime: row.departure_time || legacyMeta.departureTime || null,
     estimatedArrival: row.estimated_delivery || legacyMeta.estimatedArrival || null,
     deliveryDeadline: row.delivery_deadline || legacyMeta.deliveryDeadline || row.estimated_delivery || null,
@@ -274,7 +277,7 @@ async function fetchHistoryMap(shipmentIds, limitPerShipment = HISTORY_LIMIT) {
     .from(MOVEMENT_TABLE)
     .select('*')
     .in('shipment_id', shipmentIds)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: true });
   if (error) throw error;
   for (const row of data || []) {
     const key = String(row.shipment_id);
@@ -367,6 +370,7 @@ function createShipmentPayload(body = {}, assignment = null) {
     delivery_deadline: built.deliveryDeadline,
     departure_time: startAt,
     paused_reason: '',
+    resume_reason: '',
     pause_started_at: null,
     notes: String(body.notes || '').trim(),
     shipping_mode: String(body.shippingMode || body.shipping_mode || 'Express').trim(),
@@ -388,11 +392,12 @@ function createShipmentPayload(body = {}, assignment = null) {
 function sendRefreshMessage(message, audience = null) {
   for (const client of wsClients) {
     const isAdminClient = client?.meta?.role === 'admin';
+    const isPublicClient = client?.meta?.role === 'public';
     const userMatches = audience
       ? (Boolean(audience.userId) && audience.userId === client?.meta?.userId)
         || (Boolean(audience.email) && audience.email === client?.meta?.email)
       : true;
-    if (client.readyState === 1 && (isAdminClient || userMatches)) {
+    if (client.readyState === 1 && (isAdminClient || isPublicClient || userMatches)) {
       try { client.send(message); } catch {}
     }
   }
@@ -545,6 +550,7 @@ async function pauseShipment(shipmentId, reason = '') {
     status: 'paused',
     status_control: 'paused',
     paused_reason: pauseReason,
+    resume_reason: '',
     pause_started_at: nowIso,
     updated_at: nowIso
   };
@@ -556,7 +562,7 @@ async function pauseShipment(shipmentId, reason = '') {
     shipmentId,
     location: existing.current_location || getCurrentShipmentEvent(existing)?.location || 'Logistics Hub',
     status: 'paused',
-    note: 'Shipment temporarily paused',
+    note: pauseReason,
     movementType: 'control',
     simulated: false
   });
@@ -565,7 +571,7 @@ async function pauseShipment(shipmentId, reason = '') {
   return fetchShipmentById(shipmentId);
 }
 
-async function resumeShipment(shipmentId) {
+async function resumeShipment(shipmentId, reason = '') {
   const { data: existing, error: fetchError } = await supabase
     .from(SHIPMENT_TABLE)
     .select('*')
@@ -573,6 +579,9 @@ async function resumeShipment(shipmentId) {
     .maybeSingle();
   if (fetchError) throw fetchError;
   if (!existing) throw new Error('Shipment not found.');
+
+  const resumeReason = String(reason || '').trim();
+  if (!resumeReason) throw new Error('Resume reason is required.');
 
   const now = new Date();
   const pausedAt = existing.pause_started_at ? new Date(existing.pause_started_at) : null;
@@ -586,6 +595,7 @@ async function resumeShipment(shipmentId) {
     status: resumedStatus === 'paused' ? 'in_transit' : resumedStatus,
     status_control: 'active',
     paused_reason: '',
+    resume_reason: resumeReason,
     pause_started_at: null,
     estimated_delivery: getDeliveryEta(plan) || existing.estimated_delivery,
     delivery_deadline: getDeliveryEta(plan) || existing.delivery_deadline || existing.estimated_delivery,
@@ -603,7 +613,7 @@ async function resumeShipment(shipmentId) {
     shipmentId,
     location: existing.current_location || currentEvent?.location || 'Logistics Hub',
     status: 'in_transit',
-    note: 'Shipment movement resumed',
+    note: resumeReason,
     movementType: 'control',
     simulated: false
   });
@@ -776,7 +786,7 @@ app.post('/api/shipments/:id/pause', requireAdmin, async (req, res) => {
 app.post('/api/shipments/:id/resume', requireAdmin, async (req, res) => {
   if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
   try {
-    const shipment = await resumeShipment(Number(req.params.id));
+    const shipment = await resumeShipment(Number(req.params.id), req.body?.reason || req.body?.resumeReason || req.body?.resume_reason || '');
     res.json({ shipment });
   } catch (error) {
     logDbError('Resume shipment failed', error);
@@ -826,7 +836,7 @@ app.patch('/api/shipments/:id', async (req, res) => {
       return res.json({ shipment });
     }
     if (existing.status_control === 'paused' && nextStatus !== 'paused') {
-      await resumeShipment(Number(req.params.id));
+      await resumeShipment(Number(req.params.id), req.body?.resumeReason || req.body?.resume_reason || '');
     }
 
     let plan = getRowPlan(existing);
@@ -847,6 +857,7 @@ app.patch('/api/shipments/:id', async (req, res) => {
       delivery_deadline: getDeliveryEta(plan) || existing.delivery_deadline || existing.estimated_delivery,
       departure_time: req.body?.departureTime || req.body?.departure_time || existing.departure_time || existing.created_at,
       paused_reason: req.body?.pausedReason ?? req.body?.paused_reason ?? (nextStatus === 'paused' ? 'Shipment temporarily on hold' : ''),
+      resume_reason: req.body?.resumeReason ?? req.body?.resume_reason ?? (nextStatus === 'paused' ? '' : (existing.resume_reason || '')),
       pause_started_at: null,
       notes: req.body?.notes ?? existing.notes ?? '',
       current_step: Number(existing.current_step || 0),

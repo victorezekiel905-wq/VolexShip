@@ -112,12 +112,14 @@ function extractShipmentHistory(row, meta) {
     }
   }
   if (!Array.isArray(history)) return [];
-  return history.map(entry => ({
-    ...entry,
-    status: normalizeStatusValue(entry.status || entry.statusLabel || entry.title),
-    title: entry.title || entry.statusLabel || getStatusMeta(normalizeStatusValue(entry.status)).label,
-    detail: entry.detail || entry.note || `Status: ${getStatusMeta(normalizeStatusValue(entry.status)).label}`
-  }));
+  return history
+    .map(entry => ({
+      ...entry,
+      status: normalizeStatusValue(entry.status || entry.statusLabel || entry.title),
+      title: entry.title || entry.statusLabel || getStatusMeta(normalizeStatusValue(entry.status)).label,
+      detail: entry.detail || entry.note || `Status: ${getStatusMeta(normalizeStatusValue(entry.status)).label}`
+    }))
+    .sort((a, b) => new Date(a.time || a.createdAt || 0) - new Date(b.time || b.createdAt || 0));
 }
 
 function normalizeMovementPlan(rawPlan) {
@@ -142,7 +144,7 @@ function normalizeMovementPlan(rawPlan) {
 
 /* ── Status stages ── */
 const STAGES = [
-  { key: 'processing',        label: 'Processing',          progress: 12 },
+  { key: 'processing',        label: 'Pending',             progress: 12 },
   { key: 'confirmed',         label: 'Departed',            progress: 25 },
   { key: 'in_transit',        label: 'In Transit',          progress: 55 },
   { key: 'customs',           label: 'Arrived at Facility', progress: 72 },
@@ -353,6 +355,8 @@ function normalizeShipment(row) {
     status: normalizeStatusValue(row.status || row.Status || meta.status || 'processing'),
     statusControl: row.statusControl || row.status_control || meta.statusControl || 'active',
     pausedReason: row.pausedReason || row.paused_reason || meta.pausedReason || '',
+    resumeReason: row.resumeReason || row.resume_reason || meta.resumeReason || '',
+    pauseState: Boolean(row.pauseState ?? meta.pauseState ?? ((row.statusControl || row.status_control || meta.statusControl || 'active') === 'paused' || normalizeStatusValue(row.status || row.Status || meta.status || '') === 'paused')),
     pausedAt: row.pausedAt || row.pause_started_at || meta.pausedAt || null,
     pausedProgress: row.pausedProgress ?? row.paused_progress ?? meta.pausedProgress ?? null,
     departureTime: row.departureTime || row.departure_time || meta.departureTime || null,
@@ -454,8 +458,10 @@ function shipmentImage(shipment) {
 
 /* ── Shipment card markup ── */
 function shipmentCardMarkup(shipment, options = {}) {
-  const latest   = (shipment.history || [])[0];
+  const historyItems = shipment.history || [];
+  const latest   = historyItems[historyItems.length - 1];
   const paused   = shipment.status === 'paused' && shipment.pausedReason;
+  const resumed  = shipment.status !== 'paused' && shipment.resumeReason;
   const progress = computeShipmentProgress(shipment);
   const actionMarkup = options.showActions || '';
   const dept = shipment.departureTime ? formatDateTime(shipment.departureTime) : '—';
@@ -501,6 +507,7 @@ function shipmentCardMarkup(shipment, options = {}) {
           </div>
           ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
           ${paused ? `<div class="status-banner"><i class="fa-solid fa-circle-pause"></i><div><strong>Movement paused</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
+          ${!paused && resumed ? `<div class="status-banner"><i class="fa-solid fa-circle-play"></i><div><strong>Movement resumed</strong><p>${shipment.resumeReason}</p></div></div>` : ''}
           ${latest ? `<div class="timeline compact-timeline"><div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-body"><strong><span>${formatDateTime(latest.time)} — ${latest.location}</span><span>${latest.title}</span></strong><span>Status: ${getStatusMeta(latest.status).label}${latest.note || latest.detail ? ` · Note: ${latest.note || latest.detail}` : ''}</span></div></div></div>` : ''}
           ${actionMarkup}
         </div>
@@ -571,7 +578,8 @@ function shipmentDetailMarkup(shipment) {
         <div><label>Created</label><strong>${formatDateTime(shipment.createdAt)}</strong></div>
       </div>
       ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
-      ${shipment.pausedReason ? `<div class="status-banner"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Delay notice</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
+      ${shipment.status === 'paused' && shipment.pausedReason ? `<div class="status-banner"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Delay notice</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
+      ${shipment.status !== 'paused' && shipment.resumeReason ? `<div class="status-banner"><i class="fa-solid fa-circle-play"></i><div><strong>Movement resumed</strong><p>${shipment.resumeReason}</p></div></div>` : ''}
       <div class="stack"><h4 class="timeline-heading"><i class="fa-solid fa-route"></i> Delivery Movement Timeline</h4>
         <div class="timeline">${historyHtml}</div>
       </div>
@@ -585,11 +593,11 @@ function findShipmentByCode(code) {
   ) || null;
 }
 
-async function fetchShipmentByCode(code) {
+async function fetchShipmentByCode(code, options = {}) {
   const c = (code || '').trim().toUpperCase();
   if (!c) throw new Error('Tracking code is required.');
   const cached = findShipmentByCode(c);
-  if (cached) return cached;
+  if (cached && !options.force) return cached;
   if (window.__veloxshipRuntime.dbReady) {
     try {
       const data = await apiFetch(`/shipments/lookup/${encodeURIComponent(c)}`);
@@ -738,7 +746,7 @@ function generateTrackingCode(existing = []) {
 
 function appendHistory(shipment, entry) {
   shipment.history = shipment.history || [];
-  shipment.history.unshift({ id: vsUid('evt'), time: new Date().toISOString(), ...entry });
+  shipment.history.push({ id: vsUid('evt'), time: new Date().toISOString(), ...entry });
 }
 
 async function ensureShipmentsLoaded(force = false) {
@@ -900,12 +908,20 @@ async function updateShipment(id, updates) {
   Object.assign(next, updates);
 
   if (updates.status === 'paused') {
+    next.pauseState = true;
     next.pausedProgress = priorP;
+    next.resumeReason = '';
     next.pausedReason   = updates.pausedReason || next.pausedReason || 'Movement paused by operations.';
   }
   if (prev === 'paused' && updates.status && updates.status !== 'paused') {
+    next.pauseState = false;
     next.pausedProgress = null;
+    next.resumeReason = updates.resumeReason || next.resumeReason || '';
     if (!updates.pausedReason) next.pausedReason = '';
+  }
+  if (updates.resumeReason && updates.status !== 'paused') {
+    next.resumeReason = updates.resumeReason;
+    next.pauseState = false;
   }
 
   if (updates.status && updates.status !== prev) {
@@ -935,6 +951,7 @@ async function updateShipment(id, updates) {
           estimatedArrival: next.estimatedArrival,
           departureTime: next.departureTime,
           pausedReason: next.pausedReason,
+          resumeReason: next.resumeReason,
           notes: next.notes,
           history: next.history
         })
@@ -1271,24 +1288,28 @@ async function startSupabaseRealtimeSync() {
 function startRealtimeSync() {
   const page = document.body?.dataset?.page || '';
   const user = getCurrentUser();
-  if (!['admin', 'dashboard'].includes(page) || !user) return;
+  const isPrivatePage = ['admin', 'dashboard'].includes(page);
+  if (isPrivatePage && !user) return;
   clearInterval(fallbackRefreshTimer);
-  fallbackRefreshTimer = setInterval(refreshShipmentsLive, 7000);
-  startSupabaseRealtimeSync();
+  if (isPrivatePage) fallbackRefreshTimer = setInterval(refreshShipmentsLive, 7000);
+  if (isPrivatePage) startSupabaseRealtimeSync();
   try {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const query = new URLSearchParams({
-      role: user.role,
-      email: user.email || '',
-      userId: user.id || '',
-      token: user.adminToken || ''
+      role: user?.role || 'public',
+      email: user?.email || '',
+      userId: user?.id || '',
+      token: user?.adminToken || ''
     });
     realtimeSocket?.close();
     realtimeSocket = new WebSocket(`${protocol}://${location.host}${window.__veloxshipRuntime.wsPath || '/ws'}?${query.toString()}`);
     realtimeSocket.addEventListener('message', event => {
       try {
         const payload = JSON.parse(event.data || '{}');
-        if (payload.type === 'refresh') refreshShipmentsLive();
+        if (payload.type === 'refresh') {
+          if (isPrivatePage) refreshShipmentsLive();
+          else dispatchShipmentRefresh();
+        }
       } catch {}
     });
     realtimeSocket.addEventListener('close', scheduleRealtimeReconnect);

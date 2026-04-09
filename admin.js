@@ -144,7 +144,7 @@ async function handlePauseShipment(id, presetReason = '') {
   }
 }
 
-async function handleResumeShipment(id) {
+async function handleResumeShipment(id, presetReason = '') {
   if (!hasAdminPrivileges()) {
     showToast('Admin access required.', 'error');
     return;
@@ -154,14 +154,22 @@ async function handleResumeShipment(id) {
     showToast('Shipment not found.', 'error');
     return;
   }
+  const reason = presetReason || window.prompt('Enter resume reason', shipment.resumeReason || '');
+  if (reason === null) return;
+  const resumeReason = String(reason || '').trim();
+  if (!resumeReason) {
+    showToast('Resume reason is required.', 'warning');
+    return;
+  }
   try {
     const result = await window.vsApiFetch(`/shipments/${id}/resume`, {
       method: 'POST',
-      headers: buildAdminHeaders()
+      headers: buildAdminHeaders(),
+      body: JSON.stringify({ reason: resumeReason })
     });
     const updated = result.shipment;
     await ensureShipmentsLoaded(true);
-    sendDashboardActionMessage(updated, 'Shipment movement resumed', 'Shipment resumed');
+    sendDashboardActionMessage(updated, `Shipment movement resumed: ${resumeReason}`, 'Shipment resumed');
     setAdminAlert('Shipment resumed successfully.', 'success');
     showToast('Shipment resumed.', 'success');
     refreshAdmin();
@@ -551,10 +559,16 @@ function installEditForm() {
         return;
       }
 
+      let resumeReason = '';
       if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
+        const resumeInput = window.prompt('Enter resume reason', shipment.resumeReason || '');
+        if (resumeInput === null) return;
+        resumeReason = String(resumeInput || '').trim();
+        if (!resumeReason) throw new Error('Resume reason is required when resuming a shipment.');
         await window.vsApiFetch(`/shipments/${editingShipmentId}/resume`, {
           method: 'POST',
-          headers: buildAdminHeaders()
+          headers: buildAdminHeaders(),
+          body: JSON.stringify({ reason: resumeReason })
         });
       }
 
@@ -564,13 +578,14 @@ function installEditForm() {
         estimatedArrival: document.getElementById('editEta').value || null,
         departureTime: document.getElementById('editDepartureTime')?.value || null,
         pausedReason: '',
+        resumeReason,
         historyTitle: document.getElementById('editHistoryTitle').value || undefined,
         historyDetail: document.getElementById('editHistoryDetail').value || undefined
       };
 
       if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
         if (!payload.historyTitle) payload.historyTitle = 'In Transit';
-        if (!payload.historyDetail) payload.historyDetail = 'Shipment movement resumed';
+        if (!payload.historyDetail) payload.historyDetail = resumeReason;
       }
 
       if (status === 'deleted') {
@@ -582,7 +597,7 @@ function installEditForm() {
 
       const updated = await updateShipment(editingShipmentId, payload);
       if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
-        sendDashboardActionMessage(updated, 'Shipment movement resumed', 'Shipment resumed');
+        sendDashboardActionMessage(updated, `Shipment movement resumed: ${resumeReason}`, 'Shipment resumed');
       }
       if (status === 'deleted') {
         sendDashboardActionMessage(updated, 'Shipment has been deleted', 'Shipment deleted');

@@ -53,6 +53,7 @@ create table if not exists public.shipment (
   delivery_deadline timestamptz,
   departure_time timestamptz,
   paused_reason text,
+  resume_reason text,
   pause_started_at timestamptz,
   notes text,
   shipping_mode text default 'Express',
@@ -77,6 +78,8 @@ alter table public.shipment
   add column if not exists delivery_deadline timestamptz;
 alter table public.shipment
   add column if not exists pause_started_at timestamptz;
+alter table public.shipment
+  add column if not exists resume_reason text;
 alter table public.shipment
   add column if not exists current_event_index integer default 0;
 alter table public.shipment
