@@ -1,67 +1,38 @@
-/* VeloxShip — Node.js / Express server with real-time shipment simulation */
+/* VeloxShip — self-contained Node.js / Express server with realtime shipment simulation */
 require('dotenv').config();
 
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const {
-  HOURLY_MOVEMENT_MS,
-  MICRO_LOCATION_MS,
   normalizeStatus,
   statusLabel,
   buildScheduledMovementPlan,
-  getNextEvent,
   getNextEventTime,
   shiftFutureEvents,
   getDeliveryEta,
   getCurrentEvent
 } = require('./shipment-engine');
 
-const DEFAULT_SUPABASE_URL = 'https://udjgrrjnyhaersaiuudj.supabase.co';
-const SUPABASE_URL = process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
-const SUPABASE_KEY = SUPABASE_SERVICE_KEY || SUPABASE_ANON_KEY;
-
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'amos@gmail.com').trim().toLowerCase();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Amos@2026';
 const SECRET = process.env.ADMIN_TOKEN_SECRET || `${ADMIN_EMAIL}:${ADMIN_PASSWORD}:velox`;
 const ORIGIN = process.env.ALLOWED_ORIGIN || '*';
-
-const USERS_TABLE = 'volex';
-const SHIPMENT_TABLE = 'shipment';
-const MOVEMENT_TABLE = 'movement_history';
-const ENGINE_POLL_MS = 60 * 1000;
+const ENGINE_POLL_MS = Number(process.env.ENGINE_POLL_MS || 60 * 1000);
 const HISTORY_LIMIT = 500;
+const DATA_FILE = path.join(__dirname, 'veloxship-data.json');
+const DEFAULT_SUPABASE_URL = 'https://udjgrrjnyhaersaiuudj.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkamdycmpueWhhZXJzYWl1dWRqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5NTcxNTIsImV4cCI6MjA5MDUzMzE1Mn0.VVpnC9UPVTmNtPU1lS5HzDEqfi8XXEhJ1kAJsABeAtI';
 
-let supabase = null;
-let majorEngineBusy = false;
-let simulationEngineBusy = false;
-const wsClients = new Set();
-
-function logDbError(scope, error) {
-  console.error(`[VeloxShip] ${scope}:`, error?.message || error, error);
-}
-
-try {
-  const { createClient } = require('@supabase/supabase-js');
-  if (SUPABASE_URL && SUPABASE_KEY) {
-    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false }
-    });
-  } else {
-    console.warn('[VeloxShip] Supabase key missing. Set SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY.');
-  }
-} catch (error) {
-  console.warn('[VeloxShip] Supabase client load failed:', error.message);
-}
-
-const DB_READY = Boolean(supabase);
 const app = express();
 const server = http.createServer(app);
+const wsClients = new Set();
+let majorEngineBusy = false;
+let simulationEngineBusy = false;
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
@@ -74,6 +45,10 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.static(__dirname, { extensions: ['html'], dotfiles: 'ignore' }));
+
+function logError(scope, error) {
+  console.error(`[VeloxShip] ${scope}:`, error?.message || error, error);
+}
 
 function createToken(email) {
   const exp = Date.now() + 1000 * 60 * 60 * 12;
@@ -116,27 +91,91 @@ function getCustomerUserId(req) {
   return (req.header('x-customer-user-id') || req.query.user_id || '').trim();
 }
 
-function parseJson(value, fallback) {
-  if (value == null) return fallback;
-  if (typeof value === 'object') return value;
-  try { return JSON.parse(value); } catch { return fallback; }
-}
-
 function safeIso(value, fallback = new Date()) {
   const date = value ? new Date(value) : new Date(fallback);
   if (Number.isNaN(date.getTime())) return new Date(fallback).toISOString();
   return date.toISOString();
 }
 
+function parseMaybeJson(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function ensureStoreShape(store) {
+  const safe = store && typeof store === 'object' ? store : {};
+  return {
+    meta: {
+      nextShipmentId: Math.max(Number(safe?.meta?.nextShipmentId || 1), 1),
+      nextMovementId: Math.max(Number(safe?.meta?.nextMovementId || 1), 1)
+    },
+    shipments: Array.isArray(safe?.shipments) ? safe.shipments : [],
+    movements: Array.isArray(safe?.movements) ? safe.movements : []
+  };
+}
+
+function loadStore() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      const seed = ensureStoreShape();
+      fs.writeFileSync(DATA_FILE, JSON.stringify(seed, null, 2));
+      return seed;
+    }
+    return ensureStoreShape(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+  } catch (error) {
+    logError('Load local data store failed', error);
+    return ensureStoreShape();
+  }
+}
+
+function saveStore(store) {
+  const safe = ensureStoreShape(store);
+  const tempFile = `${DATA_FILE}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(safe, null, 2));
+  fs.renameSync(tempFile, DATA_FILE);
+  return safe;
+}
+
+function readShipments() {
+  return loadStore().shipments;
+}
+
+function findShipmentRowById(id) {
+  return loadStore().shipments.find(row => String(row.id) === String(id)) || null;
+}
+
+function findShipmentRowByCode(code) {
+  const safeCode = String(code || '').trim().toUpperCase();
+  return loadStore().shipments.find(row => String(row.tracking_code || '').trim().toUpperCase() === safeCode) || null;
+}
+
+function getMovementRowsForShipment(shipmentId, limit = HISTORY_LIMIT) {
+  return loadStore().movements
+    .filter(row => String(row.shipment_id) === String(shipmentId))
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    .slice(0, limit);
+}
+
 function mapPlanEvent(event = {}) {
   return {
     ...event,
     scheduledFor: event.scheduledFor || event.scheduled_for || null,
+    scheduled_for: event.scheduled_for || event.scheduledFor || null,
     eventType: event.eventType || event.event_type || 'major',
+    event_type: event.event_type || event.eventType || 'major',
     eventIndex: Number(event.eventIndex ?? event.event_index ?? 0),
+    event_index: Number(event.event_index ?? event.eventIndex ?? 0),
     majorStepIndex: Number(event.majorStepIndex ?? event.major_step_index ?? 0),
-    progressPercent: Number(event.progressPercent ?? event.progress_percent ?? 0)
+    major_step_index: Number(event.major_step_index ?? event.majorStepIndex ?? 0),
+    progressPercent: Number(event.progressPercent ?? event.progress_percent ?? 0),
+    progress_percent: Number(event.progress_percent ?? event.progressPercent ?? 0)
   };
+}
+
+function getRowPlan(row) {
+  const plan = parseMaybeJson(row?.movement_plan, []);
+  return Array.isArray(plan) ? plan.map(mapPlanEvent) : [];
 }
 
 function mapMovementRow(row) {
@@ -157,11 +196,6 @@ function mapMovementRow(row) {
   };
 }
 
-function getRowPlan(row) {
-  const plan = parseJson(row?.movement_plan, []);
-  return Array.isArray(plan) ? plan.map(mapPlanEvent) : [];
-}
-
 function getNextPointers(plan, currentEventIndex) {
   return {
     nextMovementAt: getNextEventTime(plan, currentEventIndex, 'major'),
@@ -169,54 +203,43 @@ function getNextPointers(plan, currentEventIndex) {
   };
 }
 
-function getCurrentShipmentEvent(row) {
-  const plan = getRowPlan(row);
-  return getCurrentEvent(plan, Number(row?.current_event_index || 0));
-}
-
 function fromRow(row, historyRows = []) {
   if (!row) return null;
-  const legacyMeta = parseJson(row.movement_history, {});
   const plan = getRowPlan(row);
-  const history = Array.isArray(historyRows) && historyRows.length
-    ? historyRows.map(mapMovementRow)
-    : Array.isArray(legacyMeta.history)
-      ? legacyMeta.history
-      : [];
+  const history = (historyRows || []).map(mapMovementRow);
   return {
     id: row.id,
-    trackingCode: row.tracking_code || legacyMeta.trackingCode || '',
-    userId: row.user_id || legacyMeta.userId || '',
-    customerEmail: (row.email || legacyMeta.customerEmail || '').toLowerCase(),
-    customerName: row.full_name || legacyMeta.customerName || '',
-    phone: row.phone || legacyMeta.phone || '',
-    address: row.address || legacyMeta.address || '',
-    productName: row.shipment_title || legacyMeta.productName || 'Unnamed item',
-    productCategory: row.product_category || legacyMeta.productCategory || 'General cargo',
-    productDescription: row.product_description || legacyMeta.productDescription || '',
-    quantity: Number(row.quantity ?? legacyMeta.quantity ?? 1),
-    weightKg: Number(row.weight ?? legacyMeta.weightKg ?? 1),
-    valueUsd: Number(row.value_usd ?? legacyMeta.valueUsd ?? 0),
-    origin: row.origin || legacyMeta.origin || '—',
-    destination: row.destination || legacyMeta.destination || '—',
-    currentLocation: row.current_location || legacyMeta.currentLocation || plan?.[0]?.location || 'Origin Facility',
-    shippingMode: row.shipping_mode || legacyMeta.shippingMode || 'Express',
-    priority: row.priority || legacyMeta.priority || 'Priority',
-    status: normalizeStatus(row.status || legacyMeta.status || 'processing'),
-    statusControl: row.status_control || legacyMeta.statusControl || 'active',
-    pausedReason: row.paused_reason || legacyMeta.pausedReason || '',
-    resumeReason: row.resume_reason || legacyMeta.resumeReason || '',
-    pauseState: (row.status_control || legacyMeta.statusControl || 'active') === 'paused'
-      || normalizeStatus(row.status || legacyMeta.status || '') === 'paused',
-    departureTime: row.departure_time || legacyMeta.departureTime || null,
-    estimatedArrival: row.estimated_delivery || legacyMeta.estimatedArrival || null,
-    deliveryDeadline: row.delivery_deadline || legacyMeta.deliveryDeadline || row.estimated_delivery || null,
-    createdAt: row.created_at || legacyMeta.createdAt || new Date().toISOString(),
-    updatedAt: row.updated_at || legacyMeta.updatedAt || row.created_at || new Date().toISOString(),
-    notes: row.notes || legacyMeta.notes || '',
-    confirmedByCustomer: Boolean(row.confirmed_by_customer ?? legacyMeta.confirmedByCustomer),
+    trackingCode: row.tracking_code || '',
+    userId: row.user_id || '',
+    customerEmail: (row.email || '').toLowerCase(),
+    customerName: row.full_name || '',
+    phone: row.phone || '',
+    address: row.address || '',
+    productName: row.shipment_title || 'Unnamed item',
+    productCategory: row.product_category || 'General cargo',
+    productDescription: row.product_description || '',
+    quantity: Number(row.quantity ?? 1),
+    weightKg: Number(row.weight ?? 1),
+    valueUsd: Number(row.value_usd ?? 0),
+    origin: row.origin || '—',
+    destination: row.destination || '—',
+    currentLocation: row.current_location || plan?.[0]?.location || 'Origin Facility',
+    shippingMode: row.shipping_mode || 'Express',
+    priority: row.priority || 'Priority',
+    status: normalizeStatus(row.status || 'processing'),
+    statusControl: row.status_control || 'active',
+    pausedReason: row.paused_reason || '',
+    resumeReason: row.resume_reason || '',
+    pauseState: (row.status_control || 'active') === 'paused' || normalizeStatus(row.status || '') === 'paused',
+    departureTime: row.departure_time || null,
+    estimatedArrival: row.estimated_delivery || null,
+    deliveryDeadline: row.delivery_deadline || row.estimated_delivery || null,
+    createdAt: row.created_at || new Date().toISOString(),
+    updatedAt: row.updated_at || row.created_at || new Date().toISOString(),
+    notes: row.notes || '',
+    confirmedByCustomer: Boolean(row.confirmed_by_customer),
     deleted: normalizeStatus(row.status) === 'deleted',
-    deletedAt: row.deleted_at || legacyMeta.deletedAt || null,
+    deletedAt: row.deleted_at || null,
     currentStep: Number(row.current_step ?? 0),
     currentEventIndex: Number(row.current_event_index ?? row.current_step ?? 0),
     totalSteps: Array.isArray(plan) ? plan.length : 0,
@@ -225,107 +248,59 @@ function fromRow(row, historyRows = []) {
     nextSimulationAt: row.next_simulation_at || null,
     pausedAt: row.pause_started_at || null,
     movementPlan: plan,
-    stepIntervalHours: Number(row.movement_step_interval_hours ?? 0),
+    stepIntervalHours: Number(row.movement_step_interval_hours ?? 1),
     history
   };
 }
 
-async function fetchUserAssignment(email, fallbackUserId = '') {
-  const safeEmail = String(email || '').trim().toLowerCase();
-  if (!DB_READY || !safeEmail) {
-    return {
-      userId: fallbackUserId || null,
-      fullName: '',
-      email: safeEmail,
-      phone: '',
-      address: ''
-    };
-  }
-  try {
-    const { data, error } = await supabase
-      .from(USERS_TABLE)
-      .select('user_id,full_name,email,phone,address')
-      .eq('role', 'user')
-      .is('tracking_code', null)
-      .eq('email', safeEmail)
-      .limit(1)
-      .maybeSingle();
-    if (error) throw error;
-    return {
-      userId: data?.user_id || fallbackUserId || null,
-      fullName: data?.full_name || '',
-      email: data?.email || safeEmail,
-      phone: data?.phone || '',
-      address: data?.address || ''
-    };
-  } catch (error) {
-    logDbError('Resolve customer assignment failed', error);
-    return {
-      userId: fallbackUserId || null,
-      fullName: '',
-      email: safeEmail,
-      phone: '',
-      address: ''
-    };
-  }
+function hydrateShipments(rows) {
+  return (rows || []).map(row => fromRow(row, getMovementRowsForShipment(row.id)));
 }
 
-async function fetchHistoryMap(shipmentIds, limitPerShipment = HISTORY_LIMIT) {
-  const map = new Map();
-  if (!shipmentIds?.length) return map;
-  const { data, error } = await supabase
-    .from(MOVEMENT_TABLE)
-    .select('*')
-    .in('shipment_id', shipmentIds)
-    .order('created_at', { ascending: true });
-  if (error) throw error;
-  for (const row of data || []) {
-    const key = String(row.shipment_id);
-    if (!map.has(key)) map.set(key, []);
-    const list = map.get(key);
-    if (list.length < limitPerShipment) list.push(row);
-  }
-  return map;
+function fetchShipmentById(id) {
+  const row = findShipmentRowById(id);
+  if (!row) return null;
+  return fromRow(row, getMovementRowsForShipment(row.id));
 }
 
-async function hydrateShipments(rows) {
-  const ids = (rows || []).map(row => row.id).filter(Boolean);
-  const historyMap = await fetchHistoryMap(ids);
-  return (rows || []).map(row => fromRow(row, historyMap.get(String(row.id)) || []));
+function nextId(key) {
+  const store = loadStore();
+  const value = Number(store.meta[key] || 1);
+  store.meta[key] = value + 1;
+  saveStore(store);
+  return value;
 }
 
-async function fetchShipmentById(id) {
-  const { data, error } = await supabase
-    .from(SHIPMENT_TABLE)
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) return null;
-  const historyMap = await fetchHistoryMap([data.id]);
-  return fromRow(data, historyMap.get(String(data.id)) || []);
-}
-
-async function insertMovementRow({ shipmentId, location, status, note, createdAt = null, movementType = 'manual', simulated = false }) {
-  const payload = {
-    shipment_id: shipmentId,
+function insertMovementRow({ shipmentId, location, status, note, createdAt = null, movementType = 'manual', simulated = false }) {
+  const store = loadStore();
+  const movement = {
+    id: Number(store.meta.nextMovementId || 1),
+    shipment_id: Number(shipmentId),
     location: String(location || 'Logistics Hub').trim() || 'Logistics Hub',
     status: normalizeStatus(status),
     note: String(note || '').trim() || null,
     movement_type: movementType,
-    is_simulated: Boolean(simulated)
+    is_simulated: Boolean(simulated),
+    created_at: createdAt ? safeIso(createdAt) : new Date().toISOString()
   };
-  if (createdAt) payload.created_at = createdAt;
-  const { data, error } = await supabase
-    .from(MOVEMENT_TABLE)
-    .insert(payload)
-    .select('*')
-    .single();
-  if (error) throw error;
-  return data;
+  store.meta.nextMovementId = movement.id + 1;
+  store.movements.push(movement);
+  saveStore(store);
+  return movement;
 }
 
-function createShipmentPayload(body = {}, assignment = null) {
+function updateShipmentRow(id, updater) {
+  const store = loadStore();
+  const index = store.shipments.findIndex(row => String(row.id) === String(id));
+  if (index < 0) return null;
+  const source = JSON.parse(JSON.stringify(store.shipments[index]));
+  const updated = updater(source) || source;
+  store.shipments[index] = updated;
+  saveStore(store);
+  return updated;
+}
+
+function createShipmentPayload(body = {}) {
   const createdAt = safeIso(body.createdAt || new Date().toISOString());
   const startAt = safeIso(body.departureTime || body.departure_time || createdAt, createdAt);
   const deliveryDeadline = body.expectedDeliveryDate
@@ -346,15 +321,15 @@ function createShipmentPayload(body = {}, assignment = null) {
   });
 
   const plan = built.plan;
-  const firstEvent = plan[0];
+  const firstEvent = plan[0] || {};
 
   return {
     tracking_code: String(body.trackingCode || body.tracking_code || '').trim().toUpperCase(),
-    user_id: assignment?.userId || String(body.customerUserId || body.user_id || '').trim() || null,
-    full_name: assignment?.fullName || String(body.customerName || body.full_name || '').trim() || '',
-    email: (assignment?.email || body.customerEmail || body.email || '').trim().toLowerCase(),
-    phone: assignment?.phone || String(body.phone || '').trim() || '',
-    address: assignment?.address || String(body.address || '').trim() || '',
+    user_id: String(body.customerUserId || body.user_id || '').trim() || null,
+    full_name: String(body.customerName || body.full_name || '').trim(),
+    email: String(body.customerEmail || body.email || '').trim().toLowerCase(),
+    phone: String(body.phone || '').trim(),
+    address: String(body.address || '').trim(),
     shipment_title: String(body.productName || body.shipment_title || 'Unnamed item').trim(),
     product_category: String(body.productCategory || body.product_category || 'General cargo').trim(),
     product_description: String(body.productDescription || body.product_description || '').trim(),
@@ -363,9 +338,9 @@ function createShipmentPayload(body = {}, assignment = null) {
     value_usd: Number(body.valueUsd || body.value_usd || 0),
     origin: String(body.origin || '—').trim() || '—',
     destination: String(body.destination || '—').trim() || '—',
-    status: normalizeStatus(firstEvent?.status || 'processing'),
+    status: normalizeStatus(firstEvent.status || body.status || 'processing'),
     status_control: 'active',
-    current_location: firstEvent?.location || 'Origin Facility',
+    current_location: String(body.currentLocation || firstEvent.location || body.origin || 'Origin Facility').trim(),
     estimated_delivery: built.deliveryDeadline,
     delivery_deadline: built.deliveryDeadline,
     departure_time: startAt,
@@ -375,8 +350,8 @@ function createShipmentPayload(body = {}, assignment = null) {
     notes: String(body.notes || '').trim(),
     shipping_mode: String(body.shippingMode || body.shipping_mode || 'Express').trim(),
     priority: String(body.priority || 'Priority').trim(),
-    confirmed_by_customer: false,
-    current_step: Number(firstEvent?.major_step_index || 0),
+    confirmed_by_customer: Boolean(body.confirmedByCustomer),
+    current_step: Number(firstEvent.major_step_index || 0),
     current_event_index: 0,
     total_events: built.totalEvents,
     movement_plan: JSON.stringify(plan),
@@ -404,49 +379,37 @@ function sendRefreshMessage(message, audience = null) {
 }
 
 function broadcastRefresh(reason = 'shipments:refresh', shipmentId = null) {
+  const row = shipmentId ? findShipmentRowById(shipmentId) : null;
   const message = JSON.stringify({ type: 'refresh', reason, shipmentId, at: new Date().toISOString() });
-  if (!shipmentId || !DB_READY) {
-    sendRefreshMessage(message, null);
-    return;
-  }
-  supabase
-    .from(SHIPMENT_TABLE)
-    .select('email,user_id')
-    .eq('id', shipmentId)
-    .maybeSingle()
-    .then(({ data }) => {
-      sendRefreshMessage(message, {
-        email: String(data?.email || '').trim().toLowerCase(),
-        userId: String(data?.user_id || '').trim()
-      });
-    })
-    .catch(() => sendRefreshMessage(message, null));
+  sendRefreshMessage(message, row ? {
+    email: String(row.email || '').trim().toLowerCase(),
+    userId: String(row.user_id || '').trim()
+  } : null);
 }
 
-async function updateShipmentPointersAndState(row, plan, nextIndexOverride = null) {
+function updateShipmentPointersAndState(row, plan, nextIndexOverride = null) {
   const currentIndex = nextIndexOverride == null ? Number(row.current_event_index || 0) : Number(nextIndexOverride);
   const currentEvent = getCurrentEvent(plan, currentIndex);
   const nextPointers = getNextPointers(plan, currentIndex);
   const delivered = currentIndex >= Math.max(plan.length - 1, 0) || normalizeStatus(currentEvent?.status || row.status) === 'delivered';
-  const payload = {
+
+  return updateShipmentRow(row.id, current => ({
+    ...current,
     current_event_index: currentIndex,
-    current_step: Number(currentEvent?.major_step_index || row.current_step || 0),
-    current_location: currentEvent?.location || row.current_location,
-    status: delivered ? 'delivered' : normalizeStatus(currentEvent?.status || row.status),
-    estimated_delivery: getDeliveryEta(plan) || row.estimated_delivery,
-    delivery_deadline: getDeliveryEta(plan) || row.delivery_deadline || row.estimated_delivery,
+    current_step: Number(currentEvent?.major_step_index || current.current_step || 0),
+    current_location: currentEvent?.location || current.current_location,
+    status: delivered ? 'delivered' : normalizeStatus(currentEvent?.status || current.status),
+    estimated_delivery: getDeliveryEta(plan) || current.estimated_delivery,
+    delivery_deadline: getDeliveryEta(plan) || current.delivery_deadline || current.estimated_delivery,
     next_movement_at: delivered ? null : nextPointers.nextMovementAt,
     next_simulation_at: delivered ? null : nextPointers.nextSimulationAt,
     total_events: plan.length,
     movement_plan: JSON.stringify(plan),
     updated_at: new Date().toISOString()
-  };
-  const { data, error } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', row.id).select('*').single();
-  if (error) throw error;
-  return data;
+  }));
 }
 
-async function processDueEventsForShipment(row, eventType) {
+function processDueEventsForShipment(row, eventType) {
   const plan = getRowPlan(row);
   if (!plan.length) return false;
 
@@ -460,7 +423,7 @@ async function processDueEventsForShipment(row, eventType) {
     if (Number.isNaN(dueAtMs) || dueAtMs > nowMs) break;
     if ((nextEvent.eventType || nextEvent.event_type) !== eventType) break;
 
-    await insertMovementRow({
+    insertMovementRow({
       shipmentId: row.id,
       location: nextEvent.location,
       status: nextEvent.status,
@@ -475,92 +438,71 @@ async function processDueEventsForShipment(row, eventType) {
   }
 
   if (!changed) return false;
-
-  await updateShipmentPointersAndState(row, plan, currentIndex);
+  updateShipmentPointersAndState(row, plan, currentIndex);
   broadcastRefresh(eventType === 'major' ? 'movement-engine' : 'simulation-engine', row.id);
   return true;
 }
 
-async function runMajorMovementEngine() {
-  if (!DB_READY || majorEngineBusy) return;
+function runMajorMovementEngine() {
+  if (majorEngineBusy) return;
   majorEngineBusy = true;
   try {
-    const nowIso = new Date().toISOString();
-    const { data, error } = await supabase
-      .from(SHIPMENT_TABLE)
-      .select('*')
-      .eq('status_control', 'active')
-      .not('next_movement_at', 'is', null)
-      .lte('next_movement_at', nowIso)
-      .neq('status', 'deleted')
-      .neq('status', 'delivered')
-      .order('next_movement_at', { ascending: true })
-      .limit(100);
-    if (error) throw error;
-    for (const row of data || []) {
-      await processDueEventsForShipment(row, 'major');
-    }
+    const nowMs = Date.now();
+    const rows = readShipments()
+      .filter(row => row.status_control === 'active'
+        && row.next_movement_at
+        && !['deleted', 'delivered'].includes(normalizeStatus(row.status))
+        && new Date(row.next_movement_at).getTime() <= nowMs)
+      .sort((a, b) => new Date(a.next_movement_at) - new Date(b.next_movement_at))
+      .slice(0, 100);
+    rows.forEach(row => processDueEventsForShipment(row, 'major'));
   } catch (error) {
-    logDbError('Hourly movement engine tick failed', error);
+    logError('Hourly movement engine tick failed', error);
   } finally {
     majorEngineBusy = false;
   }
 }
 
-async function runSimulationEngine() {
-  if (!DB_READY || simulationEngineBusy) return;
+function runSimulationEngine() {
+  if (simulationEngineBusy) return;
   simulationEngineBusy = true;
   try {
-    const nowIso = new Date().toISOString();
-    const { data, error } = await supabase
-      .from(SHIPMENT_TABLE)
-      .select('*')
-      .eq('status_control', 'active')
-      .not('next_simulation_at', 'is', null)
-      .lte('next_simulation_at', nowIso)
-      .neq('status', 'deleted')
-      .neq('status', 'delivered')
-      .order('next_simulation_at', { ascending: true })
-      .limit(100);
-    if (error) throw error;
-    for (const row of data || []) {
-      await processDueEventsForShipment(row, 'micro');
-    }
+    const nowMs = Date.now();
+    const rows = readShipments()
+      .filter(row => row.status_control === 'active'
+        && row.next_simulation_at
+        && !['deleted', 'delivered'].includes(normalizeStatus(row.status))
+        && new Date(row.next_simulation_at).getTime() <= nowMs)
+      .sort((a, b) => new Date(a.next_simulation_at) - new Date(b.next_simulation_at))
+      .slice(0, 100);
+    rows.forEach(row => processDueEventsForShipment(row, 'micro'));
   } catch (error) {
-    logDbError('4-hour simulation engine tick failed', error);
+    logError('Simulation engine tick failed', error);
   } finally {
     simulationEngineBusy = false;
   }
 }
 
-async function pauseShipment(shipmentId, reason = '') {
-  const { data: existing, error: fetchError } = await supabase
-    .from(SHIPMENT_TABLE)
-    .select('*')
-    .eq('id', shipmentId)
-    .maybeSingle();
-  if (fetchError) throw fetchError;
+function pauseShipment(shipmentId, reason = '') {
+  const existing = findShipmentRowById(shipmentId);
   if (!existing) throw new Error('Shipment not found.');
-
   if (existing.status_control === 'paused') return fetchShipmentById(shipmentId);
 
   const nowIso = new Date().toISOString();
   const pauseReason = String(reason || 'Shipment temporarily paused').trim() || 'Shipment temporarily paused';
-  const payload = {
+  updateShipmentRow(shipmentId, current => ({
+    ...current,
     status: 'paused',
     status_control: 'paused',
     paused_reason: pauseReason,
     resume_reason: '',
     pause_started_at: nowIso,
     updated_at: nowIso
-  };
+  }));
 
-  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', shipmentId);
-  if (updateError) throw updateError;
-
-  await insertMovementRow({
+  insertMovementRow({
     shipmentId,
-    location: existing.current_location || getCurrentShipmentEvent(existing)?.location || 'Logistics Hub',
+    location: existing.current_location || 'Logistics Hub',
     status: 'paused',
     note: pauseReason,
     movementType: 'control',
@@ -571,13 +513,8 @@ async function pauseShipment(shipmentId, reason = '') {
   return fetchShipmentById(shipmentId);
 }
 
-async function resumeShipment(shipmentId, reason = '') {
-  const { data: existing, error: fetchError } = await supabase
-    .from(SHIPMENT_TABLE)
-    .select('*')
-    .eq('id', shipmentId)
-    .maybeSingle();
-  if (fetchError) throw fetchError;
+function resumeShipment(shipmentId, reason = '') {
+  const existing = findShipmentRowById(shipmentId);
   if (!existing) throw new Error('Shipment not found.');
 
   const resumeReason = String(reason || '').trim();
@@ -589,27 +526,27 @@ async function resumeShipment(shipmentId, reason = '') {
   const plan = shiftFutureEvents(getRowPlan(existing), Number(existing.current_event_index || 0), pausedForMs);
   const nextPointers = getNextPointers(plan, Number(existing.current_event_index || 0));
   const currentEvent = getCurrentEvent(plan, Number(existing.current_event_index || 0));
-  const resumedStatus = normalizeStatus(currentEvent?.status || 'in_transit') === 'processing' ? 'in_transit' : normalizeStatus(currentEvent?.status || 'in_transit');
+  const resumedStatus = normalizeStatus(currentEvent?.status || 'in_transit') === 'processing'
+    ? 'in_transit'
+    : normalizeStatus(currentEvent?.status || 'in_transit');
 
-  const payload = {
+  updateShipmentRow(shipmentId, current => ({
+    ...current,
     status: resumedStatus === 'paused' ? 'in_transit' : resumedStatus,
     status_control: 'active',
     paused_reason: '',
     resume_reason: resumeReason,
     pause_started_at: null,
-    estimated_delivery: getDeliveryEta(plan) || existing.estimated_delivery,
-    delivery_deadline: getDeliveryEta(plan) || existing.delivery_deadline || existing.estimated_delivery,
+    estimated_delivery: getDeliveryEta(plan) || current.estimated_delivery,
+    delivery_deadline: getDeliveryEta(plan) || current.delivery_deadline || current.estimated_delivery,
     movement_plan: JSON.stringify(plan),
     total_events: plan.length,
     next_movement_at: nextPointers.nextMovementAt,
     next_simulation_at: nextPointers.nextSimulationAt,
     updated_at: now.toISOString()
-  };
+  }));
 
-  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', shipmentId);
-  if (updateError) throw updateError;
-
-  await insertMovementRow({
+  insertMovementRow({
     shipmentId,
     location: existing.current_location || currentEvent?.location || 'Logistics Hub',
     status: 'in_transit',
@@ -622,51 +559,45 @@ async function resumeShipment(shipmentId, reason = '') {
   return fetchShipmentById(shipmentId);
 }
 
-async function refreshShipmentFromLatestMovement(shipmentId, fallbackRow = null) {
-  const source = fallbackRow || (await supabase.from(SHIPMENT_TABLE).select('*').eq('id', shipmentId).maybeSingle()).data;
+function refreshShipmentFromLatestMovement(shipmentId) {
+  const latest = getMovementRowsForShipment(shipmentId).slice(-1)[0] || null;
+  const source = findShipmentRowById(shipmentId);
   if (!source) return null;
   const plan = getRowPlan(source);
-  const { data: latestRows, error } = await supabase
-    .from(MOVEMENT_TABLE)
-    .select('*')
-    .eq('shipment_id', shipmentId)
-    .order('created_at', { ascending: false })
-    .limit(1);
-  if (error) throw error;
-  const latest = latestRows?.[0] || null;
   const currentIndex = Number(source.current_event_index || 0);
   const nextPointers = getNextPointers(plan, currentIndex);
-  const payload = {
-    status: normalizeStatus(latest?.status || source.status || 'processing'),
-    current_location: latest?.location || source.current_location,
-    next_movement_at: source.status_control === 'paused' ? source.next_movement_at : nextPointers.nextMovementAt,
-    next_simulation_at: source.status_control === 'paused' ? source.next_simulation_at : nextPointers.nextSimulationAt,
+
+  updateShipmentRow(shipmentId, current => ({
+    ...current,
+    status: normalizeStatus(latest?.status || current.status || 'processing'),
+    current_location: latest?.location || current.current_location,
+    next_movement_at: current.status_control === 'paused' ? current.next_movement_at : nextPointers.nextMovementAt,
+    next_simulation_at: current.status_control === 'paused' ? current.next_simulation_at : nextPointers.nextSimulationAt,
     updated_at: new Date().toISOString()
-  };
-  const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', shipmentId);
-  if (updateError) throw updateError;
+  }));
+
   return fetchShipmentById(shipmentId);
 }
 
 app.get('/api/runtime', (req, res) => res.json({
   ok: true,
-  dbReady: DB_READY,
-  table: SHIPMENT_TABLE,
-  supabaseUrl: SUPABASE_URL,
-  supabaseAnonKey: SUPABASE_ANON_KEY,
+  dbReady: true,
+  storageMode: 'local',
+  table: 'shipment',
+  supabaseUrl: process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL,
+  supabaseAnonKey: process.env.SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY,
   wsPath: '/ws'
 }));
 
-app.get('/api/health', async (req, res) => {
-  if (!DB_READY) return res.json({ ok: false, dbReady: false, error: 'Database not configured.' });
-  try {
-    const { data, error } = await supabase.from(SHIPMENT_TABLE).select('id,tracking_code').limit(1);
-    if (error) throw error;
-    return res.json({ ok: true, dbReady: true, sample: data?.[0]?.id ?? null });
-  } catch (error) {
-    logDbError('Health check failed', error);
-    return res.json({ ok: false, dbReady: false, error: error.message });
-  }
+app.get('/api/health', (req, res) => {
+  const store = loadStore();
+  res.json({
+    ok: true,
+    dbReady: true,
+    storageMode: 'local',
+    shipments: store.shipments.length,
+    movements: store.movements.length
+  });
 });
 
 app.post('/api/auth/admin/login', (req, res) => {
@@ -678,131 +609,109 @@ app.post('/api/auth/admin/login', (req, res) => {
   return res.json({ ok: true, token: createToken(email), admin: { email: ADMIN_EMAIL } });
 });
 
-app.get('/api/shipments', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.get('/api/shipments', requireAdmin, (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from(SHIPMENT_TABLE)
-      .select('*')
-      .order('created_at', { ascending: false });
-    if (error) throw error;
-    const shipments = await hydrateShipments(data || []);
-    res.json({ shipments, mode: 'cloud' });
+    const shipments = hydrateShipments(readShipments().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
+    res.json({ shipments, mode: 'local' });
   } catch (error) {
-    logDbError('List shipments failed', error);
+    logError('List shipments failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/shipments/mine', async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.get('/api/shipments/mine', (req, res) => {
   const email = getCustomerEmail(req);
   const userId = getCustomerUserId(req);
   if (!email && !userId) return res.status(400).json({ error: 'Customer identity required.' });
   try {
-    let query = supabase.from(SHIPMENT_TABLE).select('*').order('created_at', { ascending: false });
+    let rows = readShipments().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     if (userId) {
-      query = query.eq('user_id', userId);
+      rows = rows.filter(row => String(row.user_id || '') === userId);
+      if (!rows.length && email) rows = readShipments().filter(row => String(row.email || '').toLowerCase() === email);
     } else {
-      query = query.eq('email', email);
+      rows = rows.filter(row => String(row.email || '').toLowerCase() === email);
     }
-    let { data, error } = await query;
-    if (error) throw error;
-    if (userId && email && (!data || !data.length)) {
-      const fallback = await supabase.from(SHIPMENT_TABLE).select('*').eq('email', email).order('created_at', { ascending: false });
-      if (fallback.error) throw fallback.error;
-      data = fallback.data || [];
-    }
-    const shipments = await hydrateShipments(data || []);
-    res.json({ shipments, mode: 'cloud' });
+    res.json({ shipments: hydrateShipments(rows), mode: 'local' });
   } catch (error) {
-    logDbError('List customer shipments failed', error);
+    logError('List customer shipments failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/shipments/lookup/:code', async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.get('/api/shipments/lookup/:code', (req, res) => {
   const code = (req.params.code || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ error: 'Tracking code required.' });
   try {
-    const { data, error } = await supabase
-      .from(SHIPMENT_TABLE)
-      .select('*')
-      .eq('tracking_code', code)
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) return res.status(404).json({ error: 'Shipment not found.' });
-    const shipment = await fetchShipmentById(data.id);
-    res.json({ shipment: { ...shipment, customerEmail: '', customerName: '', phone: '', address: '' }, mode: 'cloud' });
+    const row = findShipmentRowByCode(code);
+    if (!row) return res.status(404).json({ error: 'Shipment not found.' });
+    const shipment = fetchShipmentById(row.id);
+    res.json({ shipment: { ...shipment, customerEmail: '', customerName: '', phone: '', address: '' }, mode: 'local' });
   } catch (error) {
-    logDbError('Lookup shipment failed', error);
+    logError('Lookup shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/shipments', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.post('/api/shipments', requireAdmin, (req, res) => {
   try {
     const trackingCode = String(req.body?.trackingCode || req.body?.tracking_code || '').trim().toUpperCase();
     if (!trackingCode) return res.status(400).json({ error: 'Tracking code required.' });
-    const assignment = await fetchUserAssignment(req.body?.customerEmail || req.body?.email, req.body?.customerUserId || req.body?.user_id || '');
-    const payload = createShipmentPayload({ ...req.body, trackingCode }, assignment);
-    const { data, error } = await supabase.from(SHIPMENT_TABLE).insert(payload).select('*').single();
-    if (error) throw error;
+    if (findShipmentRowByCode(trackingCode)) return res.status(409).json({ error: 'Tracking code already exists.' });
 
-    const plan = getRowPlan(data);
+    const store = loadStore();
+    const payload = createShipmentPayload({ ...req.body, trackingCode });
+    const row = {
+      id: Number(store.meta.nextShipmentId || 1),
+      ...payload
+    };
+    store.meta.nextShipmentId = row.id + 1;
+    store.shipments.push(row);
+    saveStore(store);
+
+    const plan = getRowPlan(row);
     const firstEvent = plan[0];
-    await insertMovementRow({
-      shipmentId: data.id,
-      location: firstEvent?.location,
-      status: firstEvent?.status,
-      note: firstEvent?.note,
-      createdAt: data.created_at,
+    insertMovementRow({
+      shipmentId: row.id,
+      location: firstEvent?.location || row.current_location,
+      status: firstEvent?.status || row.status,
+      note: firstEvent?.note || `Shipment registered and queued for dispatch from ${row.current_location}.`,
+      createdAt: row.created_at,
       movementType: 'major',
       simulated: false
     });
 
-    const shipment = await fetchShipmentById(data.id);
-    broadcastRefresh('shipment-created', data.id);
+    const shipment = fetchShipmentById(row.id);
+    broadcastRefresh('shipment-created', row.id);
     res.json({ shipment });
   } catch (error) {
-    logDbError('Create shipment failed', error);
+    logError('Create shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/shipments/:id/pause', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.post('/api/shipments/:id/pause', requireAdmin, (req, res) => {
   try {
-    const shipment = await pauseShipment(Number(req.params.id), req.body?.reason || req.body?.pausedReason || req.body?.paused_reason || '');
+    const shipment = pauseShipment(Number(req.params.id), req.body?.reason || req.body?.pausedReason || req.body?.paused_reason || '');
     res.json({ shipment });
   } catch (error) {
-    logDbError('Pause shipment failed', error);
+    logError('Pause shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/shipments/:id/resume', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.post('/api/shipments/:id/resume', requireAdmin, (req, res) => {
   try {
-    const shipment = await resumeShipment(Number(req.params.id), req.body?.reason || req.body?.resumeReason || req.body?.resume_reason || '');
+    const shipment = resumeShipment(Number(req.params.id), req.body?.reason || req.body?.resumeReason || req.body?.resume_reason || '');
     res.json({ shipment });
   } catch (error) {
-    logDbError('Resume shipment failed', error);
+    logError('Resume shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.patch('/api/shipments/:id', async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.patch('/api/shipments/:id', (req, res) => {
   try {
-    const { data: existing, error: fetchError } = await supabase
-      .from(SHIPMENT_TABLE)
-      .select('*')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (fetchError) throw fetchError;
+    const existing = findShipmentRowById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Shipment not found.' });
 
     if (req.body?.claimTracking) {
@@ -814,114 +723,110 @@ app.patch('/api/shipments/:id', async (req, res) => {
       if (currentEmail && currentEmail !== email) {
         return res.status(409).json({ error: 'Already assigned to another account.' });
       }
-      const payload = {
+      updateShipmentRow(req.params.id, current => ({
+        ...current,
         email,
-        user_id: userId || existing.user_id || null,
-        full_name: customerName || existing.full_name || '',
+        user_id: userId || current.user_id || null,
+        full_name: customerName || current.full_name || '',
         confirmed_by_customer: true,
         updated_at: new Date().toISOString()
-      };
-      const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', req.params.id);
-      if (updateError) throw updateError;
-      const shipment = await fetchShipmentById(req.params.id);
+      }));
+      insertMovementRow({
+        shipmentId: Number(req.params.id),
+        location: existing.current_location || 'Logistics Hub',
+        status: existing.status,
+        note: `${customerName || email} linked this shipment to their dashboard.`,
+        movementType: 'manual',
+        simulated: false
+      });
+      const shipment = fetchShipmentById(req.params.id);
       broadcastRefresh('shipment-claimed', req.params.id);
       return res.json({ shipment });
     }
 
     if (!isAdmin(req)) return res.status(403).json({ error: 'Admin required.' });
 
-    const nextStatus = req.body?.status ? normalizeStatus(req.body.status) : normalizeStatus(existing.status);
-    if (nextStatus === 'paused') {
-      const shipment = await pauseShipment(Number(req.params.id), req.body?.pausedReason || req.body?.paused_reason || 'Shipment temporarily paused');
+    const requestedStatus = req.body?.status ? normalizeStatus(req.body.status) : normalizeStatus(existing.status);
+    if (requestedStatus === 'paused') {
+      const shipment = pauseShipment(Number(req.params.id), req.body?.pausedReason || req.body?.paused_reason || 'Shipment temporarily paused');
       return res.json({ shipment });
     }
-    if (existing.status_control === 'paused' && nextStatus !== 'paused') {
-      await resumeShipment(Number(req.params.id), req.body?.resumeReason || req.body?.resume_reason || '');
+    if (existing.status_control === 'paused' && requestedStatus !== 'paused') {
+      resumeShipment(Number(req.params.id), req.body?.resumeReason || req.body?.resume_reason || '');
     }
 
-    let plan = getRowPlan(existing);
+    const latestRow = findShipmentRowById(req.params.id);
+    let plan = getRowPlan(latestRow);
     if (req.body?.estimatedArrival || req.body?.estimated_arrival || req.body?.estimated_delivery) {
       const newDeadline = safeIso(req.body.estimatedArrival || req.body.estimated_arrival || req.body.estimated_delivery);
-      const currentEta = getDeliveryEta(plan) || existing.estimated_delivery;
-      const deltaMs = new Date(newDeadline).getTime() - new Date(currentEta).getTime();
-      plan = shiftFutureEvents(plan, Number(existing.current_event_index || 0), deltaMs);
+      const currentEta = getDeliveryEta(plan) || latestRow.estimated_delivery;
+      const deltaMs = Math.max(new Date(newDeadline).getTime() - new Date(currentEta).getTime(), 0);
+      plan = shiftFutureEvents(plan, Number(latestRow.current_event_index || 0), deltaMs);
     }
 
-    const nextPointers = getNextPointers(plan, Number(existing.current_event_index || 0));
+    const nextPointers = getNextPointers(plan, Number(latestRow.current_event_index || 0));
     const nowIso = new Date().toISOString();
-    const updatePayload = {
-      status: nextStatus,
-      status_control: nextStatus === 'deleted' ? 'active' : (existing.status_control === 'paused' ? 'active' : existing.status_control || 'active'),
-      current_location: String(req.body?.currentLocation || req.body?.current_location || existing.current_location || '').trim() || existing.current_location,
-      estimated_delivery: nextStatus === 'delivered' ? nowIso : (getDeliveryEta(plan) || existing.estimated_delivery),
-      delivery_deadline: getDeliveryEta(plan) || existing.delivery_deadline || existing.estimated_delivery,
-      departure_time: req.body?.departureTime || req.body?.departure_time || existing.departure_time || existing.created_at,
-      paused_reason: req.body?.pausedReason ?? req.body?.paused_reason ?? (nextStatus === 'paused' ? 'Shipment temporarily on hold' : ''),
-      resume_reason: req.body?.resumeReason ?? req.body?.resume_reason ?? (nextStatus === 'paused' ? '' : (existing.resume_reason || '')),
+    updateShipmentRow(req.params.id, current => ({
+      ...current,
+      status: requestedStatus,
+      status_control: requestedStatus === 'deleted' ? 'active' : (current.status_control === 'paused' ? 'active' : current.status_control || 'active'),
+      current_location: String(req.body?.currentLocation || req.body?.current_location || current.current_location || '').trim() || current.current_location,
+      estimated_delivery: requestedStatus === 'delivered' ? nowIso : (getDeliveryEta(plan) || current.estimated_delivery),
+      delivery_deadline: getDeliveryEta(plan) || current.delivery_deadline || current.estimated_delivery,
+      departure_time: req.body?.departureTime || req.body?.departure_time || current.departure_time || current.created_at,
+      paused_reason: req.body?.pausedReason ?? req.body?.paused_reason ?? (requestedStatus === 'paused' ? 'Shipment temporarily on hold' : ''),
+      resume_reason: req.body?.resumeReason ?? req.body?.resume_reason ?? (requestedStatus === 'paused' ? '' : (current.resume_reason || '')),
       pause_started_at: null,
-      notes: req.body?.notes ?? existing.notes ?? '',
-      current_step: Number(existing.current_step || 0),
-      current_event_index: Number(existing.current_event_index || 0),
+      notes: req.body?.notes ?? current.notes ?? '',
       total_events: plan.length,
       movement_plan: JSON.stringify(plan),
-      next_movement_at: ['delivered', 'deleted'].includes(nextStatus) ? null : nextPointers.nextMovementAt,
-      next_simulation_at: ['delivered', 'deleted'].includes(nextStatus) ? null : nextPointers.nextSimulationAt,
+      next_movement_at: ['delivered', 'deleted'].includes(requestedStatus) ? null : nextPointers.nextMovementAt,
+      next_simulation_at: ['delivered', 'deleted'].includes(requestedStatus) ? null : nextPointers.nextSimulationAt,
+      deleted_at: requestedStatus === 'deleted' ? nowIso : current.deleted_at,
       updated_at: nowIso
-    };
-
-    const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(updatePayload).eq('id', req.params.id);
-    if (updateError) throw updateError;
+    }));
 
     const shouldWriteMovement = Boolean(req.body?.historyTitle || req.body?.historyDetail || req.body?.currentLocation || req.body?.status);
     if (shouldWriteMovement) {
-      await insertMovementRow({
+      const updatedRow = findShipmentRowById(req.params.id);
+      insertMovementRow({
         shipmentId: Number(req.params.id),
-        location: updatePayload.current_location,
-        status: nextStatus,
-        note: String(req.body?.historyDetail || req.body?.notes || statusLabel(nextStatus)).trim(),
+        location: updatedRow.current_location,
+        status: requestedStatus,
+        note: String(req.body?.historyDetail || req.body?.notes || statusLabel(requestedStatus)).trim(),
         movementType: 'manual',
         simulated: false
       });
     }
 
-    const shipment = await fetchShipmentById(req.params.id);
+    const shipment = fetchShipmentById(req.params.id);
     broadcastRefresh('shipment-updated', req.params.id);
     res.json({ shipment });
   } catch (error) {
-    logDbError('Update shipment failed', error);
+    logError('Update shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.patch('/api/shipments/:id/customer', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.patch('/api/shipments/:id/customer', requireAdmin, (req, res) => {
   try {
-    const { data: existing, error: fetchError } = await supabase.from(SHIPMENT_TABLE).select('*').eq('id', req.params.id).maybeSingle();
-    if (fetchError) throw fetchError;
+    const existing = findShipmentRowById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Shipment not found.' });
 
     const statusOverride = req.body?.statusOverride ? normalizeStatus(req.body.statusOverride) : null;
-    const payload = {
-      full_name: String(req.body?.fullName ?? req.body?.full_name ?? existing.full_name ?? '').trim(),
-      email: String(req.body?.email ?? existing.email ?? '').trim().toLowerCase(),
-      phone: String(req.body?.phone ?? existing.phone ?? '').trim(),
-      destination: String(req.body?.destination ?? existing.destination ?? '').trim(),
-      address: String(req.body?.address ?? existing.address ?? '').trim(),
-      status: statusOverride || existing.status,
+    updateShipmentRow(req.params.id, current => ({
+      ...current,
+      full_name: String(req.body?.fullName ?? req.body?.full_name ?? current.full_name ?? '').trim(),
+      email: String(req.body?.email ?? current.email ?? '').trim().toLowerCase(),
+      phone: String(req.body?.phone ?? current.phone ?? '').trim(),
+      destination: String(req.body?.destination ?? current.destination ?? '').trim(),
+      address: String(req.body?.address ?? current.address ?? '').trim(),
+      status: statusOverride || current.status,
       updated_at: new Date().toISOString()
-    };
-
-    const assignment = await fetchUserAssignment(payload.email, existing.user_id || '');
-    payload.user_id = assignment.userId || existing.user_id || null;
-    if (!payload.full_name) payload.full_name = assignment.fullName || '';
-    if (!payload.phone) payload.phone = assignment.phone || '';
-    if (!payload.address) payload.address = assignment.address || payload.address;
-
-    const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(payload).eq('id', req.params.id);
-    if (updateError) throw updateError;
+    }));
 
     if (statusOverride) {
-      await insertMovementRow({
+      insertMovementRow({
         shipmentId: Number(req.params.id),
         location: existing.current_location || 'Logistics Hub',
         status: statusOverride,
@@ -931,44 +836,35 @@ app.patch('/api/shipments/:id/customer', requireAdmin, async (req, res) => {
       });
     }
 
-    const shipment = await fetchShipmentById(req.params.id);
+    const shipment = fetchShipmentById(req.params.id);
     broadcastRefresh('customer-updated', req.params.id);
     res.json({ shipment });
   } catch (error) {
-    logDbError('Update customer shipping info failed', error);
+    logError('Update customer shipping info failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/shipments/:id/movements', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.get('/api/shipments/:id/movements', requireAdmin, (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || HISTORY_LIMIT), 200);
-    const { data, error } = await supabase
-      .from(MOVEMENT_TABLE)
-      .select('*')
-      .eq('shipment_id', req.params.id)
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    if (error) throw error;
-    res.json({ movements: (data || []).map(mapMovementRow) });
+    const movements = getMovementRowsForShipment(req.params.id, limit).reverse().map(mapMovementRow);
+    res.json({ movements });
   } catch (error) {
-    logDbError('List movement history failed', error);
+    logError('List movement history failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/shipments/:id/movements', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.post('/api/shipments/:id/movements', requireAdmin, (req, res) => {
   try {
-    const { data: shipment, error: shipmentError } = await supabase.from(SHIPMENT_TABLE).select('*').eq('id', req.params.id).maybeSingle();
-    if (shipmentError) throw shipmentError;
+    const shipment = findShipmentRowById(req.params.id);
     if (!shipment) return res.status(404).json({ error: 'Shipment not found.' });
 
     const status = normalizeStatus(req.body?.status || shipment.status);
     const location = String(req.body?.location || shipment.current_location || 'Logistics Hub').trim() || 'Logistics Hub';
     const note = String(req.body?.note || req.body?.detail || '').trim();
-    await insertMovementRow({
+    insertMovementRow({
       shipmentId: Number(req.params.id),
       location,
       status,
@@ -977,71 +873,69 @@ app.post('/api/shipments/:id/movements', requireAdmin, async (req, res) => {
       simulated: false
     });
 
-    const updatePayload = {
+    updateShipmentRow(req.params.id, current => ({
+      ...current,
       status,
       current_location: location,
       updated_at: new Date().toISOString()
-    };
-    const { error: updateError } = await supabase.from(SHIPMENT_TABLE).update(updatePayload).eq('id', req.params.id);
-    if (updateError) throw updateError;
+    }));
 
-    const updatedShipment = await fetchShipmentById(req.params.id);
+    const updatedShipment = fetchShipmentById(req.params.id);
     broadcastRefresh('movement-created', req.params.id);
     res.json({ shipment: updatedShipment });
   } catch (error) {
-    logDbError('Create movement history failed', error);
+    logError('Create movement history failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.patch('/api/shipments/:id/movements/:movementId', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.patch('/api/shipments/:id/movements/:movementId', requireAdmin, (req, res) => {
   try {
-    const { data: movement, error: fetchError } = await supabase.from(MOVEMENT_TABLE).select('*').eq('id', req.params.movementId).eq('shipment_id', req.params.id).maybeSingle();
-    if (fetchError) throw fetchError;
-    if (!movement) return res.status(404).json({ error: 'Tracking update not found.' });
+    const store = loadStore();
+    const movementIndex = store.movements.findIndex(row => String(row.id) === String(req.params.movementId) && String(row.shipment_id) === String(req.params.id));
+    if (movementIndex < 0) return res.status(404).json({ error: 'Tracking update not found.' });
 
-    const payload = {
-      location: String(req.body?.location || movement.location || 'Logistics Hub').trim() || 'Logistics Hub',
-      status: normalizeStatus(req.body?.status || movement.status),
-      note: String(req.body?.note ?? movement.note ?? '').trim() || null
+    store.movements[movementIndex] = {
+      ...store.movements[movementIndex],
+      location: String(req.body?.location || store.movements[movementIndex].location || 'Logistics Hub').trim() || 'Logistics Hub',
+      status: normalizeStatus(req.body?.status || store.movements[movementIndex].status),
+      note: String(req.body?.note ?? store.movements[movementIndex].note ?? '').trim() || null
     };
+    saveStore(store);
 
-    const { error: updateError } = await supabase.from(MOVEMENT_TABLE).update(payload).eq('id', req.params.movementId);
-    if (updateError) throw updateError;
-
-    const shipment = await refreshShipmentFromLatestMovement(Number(req.params.id));
+    const shipment = refreshShipmentFromLatestMovement(Number(req.params.id));
     broadcastRefresh('movement-updated', req.params.id);
     res.json({ shipment });
   } catch (error) {
-    logDbError('Edit movement history failed', error);
+    logError('Edit movement history failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/api/shipments/:id/movements/:movementId', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.delete('/api/shipments/:id/movements/:movementId', requireAdmin, (req, res) => {
   try {
-    const { error } = await supabase.from(MOVEMENT_TABLE).delete().eq('id', req.params.movementId).eq('shipment_id', req.params.id);
-    if (error) throw error;
-    const shipment = await refreshShipmentFromLatestMovement(Number(req.params.id));
+    const store = loadStore();
+    store.movements = store.movements.filter(row => !(String(row.id) === String(req.params.movementId) && String(row.shipment_id) === String(req.params.id)));
+    saveStore(store);
+    const shipment = refreshShipmentFromLatestMovement(Number(req.params.id));
     broadcastRefresh('movement-deleted', req.params.id);
     res.json({ ok: true, shipment });
   } catch (error) {
-    logDbError('Delete movement history failed', error);
+    logError('Delete movement history failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/api/shipments/:id', requireAdmin, async (req, res) => {
-  if (!DB_READY) return res.status(503).json({ error: 'Database not configured.' });
+app.delete('/api/shipments/:id', requireAdmin, (req, res) => {
   try {
-    const { error } = await supabase.from(SHIPMENT_TABLE).delete().eq('id', req.params.id);
-    if (error) throw error;
+    const store = loadStore();
+    store.shipments = store.shipments.filter(row => String(row.id) !== String(req.params.id));
+    store.movements = store.movements.filter(row => String(row.shipment_id) !== String(req.params.id));
+    saveStore(store);
     broadcastRefresh('shipment-deleted', req.params.id);
     res.json({ ok: true });
   } catch (error) {
-    logDbError('Delete shipment failed', error);
+    logError('Delete shipment failed', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1071,21 +965,12 @@ wss.on('connection', (socket, request) => {
   }
 });
 
-server.listen(PORT, async () => {
+server.listen(PORT, () => {
+  loadStore();
   console.log(`VeloxShip running → http://localhost:${PORT}`);
-  if (!DB_READY) {
-    console.warn('[VeloxShip] No database configured — running in local mode.');
-    return;
-  }
-  try {
-    const { error } = await supabase.from(SHIPMENT_TABLE).select('id').limit(1);
-    if (error) throw error;
-    console.log('[VeloxShip] Database connection verified.');
-    await runSimulationEngine();
-    await runMajorMovementEngine();
-    setInterval(runSimulationEngine, ENGINE_POLL_MS);
-    setInterval(runMajorMovementEngine, ENGINE_POLL_MS);
-  } catch (error) {
-    logDbError('DB check failed', error);
-  }
+  console.log(`[VeloxShip] Local shipment store → ${DATA_FILE}`);
+  runSimulationEngine();
+  runMajorMovementEngine();
+  setInterval(runSimulationEngine, ENGINE_POLL_MS);
+  setInterval(runMajorMovementEngine, ENGINE_POLL_MS);
 });

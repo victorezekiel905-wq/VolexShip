@@ -1132,6 +1132,20 @@ function refreshLiveTelemetry(scope = document) {
     el.textContent = `${d}d ${h}h ${m}m in transit`;
   }
 }
+
+function refreshOpenShipmentModal() {
+  const modal = document.getElementById('shipmentModal');
+  const content = document.getElementById('shipmentModalBody');
+  if (!modal || !content || !modal.classList.contains('active')) return;
+  const shipmentId = String(content.dataset.shipmentId || '').trim();
+  if (!shipmentId) return;
+  const shipment = getAllShipments().find(item => String(item.id) === shipmentId);
+  if (!shipment) return;
+  content.innerHTML = shipmentDetailMarkup(shipment);
+  content.setAttribute('data-shipment-id', shipment.id);
+  refreshLiveTelemetry(content);
+}
+
 function startLiveTelemetry() {
   refreshLiveTelemetry();
   clearInterval(window.__vsTelemetry);
@@ -1331,4 +1345,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   await window.vsReady;
   startLiveTelemetry();
   startRealtimeSync();
+  window.addEventListener('veloxship:shipments-updated', refreshOpenShipmentModal);
 });

@@ -1,0 +1,8 @@
+{
+  "meta": {
+    "nextShipmentId": 1,
+    "nextMovementId": 1
+  },
+  "shipments": [],
+  "movements": []
+}
