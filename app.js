@@ -20,14 +20,13 @@ window.__veloxshipCache   = { shipments: [], mode: 'loading' };
 window.__veloxshipRuntime = {
   dbReady: false,
   browserDbReady: false,
-  table: 'shipment',
+  table: 'volex',
   supabaseUrl: 'https://udjgrrjnyhaersaiuudj.supabase.co',
-  supabaseAnonKey: '',
-  wsPath: '/ws'
+  supabaseAnonKey: ''
 };
 
 const VS_SUPABASE_URL   = 'https://udjgrrjnyhaersaiuudj.supabase.co';
-const VS_SUPABASE_TABLE = 'shipment';
+const VS_SUPABASE_TABLE = 'volex';
 let browserSupabase     = null;
 
 function logDataError(scope, error, details) {
@@ -81,7 +80,7 @@ async function ensureBrowserSupabase() {
 function parseShipmentMeta(row) {
   if (!row) return {};
   const raw = row.movement_history ?? row.movementHistory ?? null;
-  if (!raw || Array.isArray(raw)) return {};
+  if (!raw) return {};
   if (typeof raw === 'object') return raw;
   try { return JSON.parse(raw); } catch (error) {
     logDataError('Failed to parse shipment movement_history.', error, raw);
@@ -89,69 +88,16 @@ function parseShipmentMeta(row) {
   }
 }
 
-function normalizeStatusValue(status) {
-  const raw = String(status || '').trim().toLowerCase();
-  if (!raw) return 'processing';
-  if (['pending', 'processing'].includes(raw)) return 'processing';
-  if (['confirmed', 'departed'].includes(raw)) return 'confirmed';
-  if (['in transit', 'in_transit'].includes(raw)) return 'in_transit';
-  if (['customs', 'customs review', 'arrived at facility', 'arrived_at_facility'].includes(raw)) return 'customs';
-  if (['out for delivery', 'out_for_delivery'].includes(raw)) return 'out_for_delivery';
-  if (raw === 'delivered') return 'delivered';
-  if (raw === 'paused') return 'paused';
-  if (raw === 'deleted') return 'deleted';
-  return raw.replace(/\s+/g, '_');
-}
-
-function extractShipmentHistory(row, meta) {
-  let history = row?.history ?? row?.movement_history ?? meta?.history ?? [];
-  if (typeof history === 'string') {
-    try { history = JSON.parse(history); } catch (error) {
-      logDataError('Failed to parse shipment history.', error, history);
-      history = [];
-    }
-  }
-  if (!Array.isArray(history)) return [];
-  return history
-    .map(entry => ({
-      ...entry,
-      status: normalizeStatusValue(entry.status || entry.statusLabel || entry.title),
-      title: entry.title || entry.statusLabel || getStatusMeta(normalizeStatusValue(entry.status)).label,
-      detail: entry.detail || entry.note || `Status: ${getStatusMeta(normalizeStatusValue(entry.status)).label}`
-    }))
-    .sort((a, b) => new Date(a.time || a.createdAt || 0) - new Date(b.time || b.createdAt || 0));
-}
-
-function normalizeMovementPlan(rawPlan) {
-  let plan = rawPlan;
-  if (typeof plan === 'string') {
-    try { plan = JSON.parse(plan); } catch (error) {
-      logDataError('Failed to parse shipment movement plan.', error, plan);
-      plan = [];
-    }
-  }
-  if (!Array.isArray(plan)) return [];
-  return plan.map(event => ({
-    ...event,
-    scheduledAt: event.scheduledAt || event.scheduled_for || null,
-    eventType: event.eventType || event.event_type || 'major',
-    eventIndex: Number(event.eventIndex ?? event.event_index ?? 0),
-    majorStepIndex: Number(event.majorStepIndex ?? event.major_step_index ?? 0),
-    progressPercent: Number(event.progressPercent ?? event.progress_percent ?? 0)
-  }));
-}
-
-
 /* ── Status stages ── */
 const STAGES = [
-  { key: 'processing',        label: 'Pending',             progress: 12 },
-  { key: 'confirmed',         label: 'Departed',            progress: 25 },
-  { key: 'in_transit',        label: 'In Transit',          progress: 55 },
-  { key: 'customs',           label: 'Arrived at Facility', progress: 72 },
-  { key: 'out_for_delivery',  label: 'Out for Delivery',    progress: 90 },
-  { key: 'delivered',         label: 'Delivered',           progress: 100 },
-  { key: 'paused',            label: 'Paused',              progress: 55 },
-  { key: 'deleted',           label: 'Deleted',             progress: 100 }
+  { key: 'processing',        label: 'Processing',        progress: 12 },
+  { key: 'confirmed',         label: 'Confirmed',         progress: 25 },
+  { key: 'in_transit',        label: 'In Transit',        progress: 55 },
+  { key: 'customs',           label: 'Customs Review',    progress: 72 },
+  { key: 'out_for_delivery',  label: 'Out for Delivery',  progress: 90 },
+  { key: 'delivered',         label: 'Delivered',         progress: 100 },
+  { key: 'paused',            label: 'Paused',            progress: 55 },
+  { key: 'deleted',           label: 'Deleted',           progress: 100 }
 ];
 
 /* ── Helpers ── */
@@ -183,7 +129,7 @@ function getStatusMeta(status) {
     processing: 'info', confirmed: 'info', in_transit: 'warning',
     customs: 'warning', out_for_delivery: 'info', delivered: 'success', paused: 'danger', deleted: 'danger'
   };
-  return { ...stage, tone: toneMap[normalizeStatusValue(status)] || 'info' };
+  return { ...stage, tone: toneMap[status] || 'info' };
 }
 
 /* ── State (users, requests, messages) ── */
@@ -322,21 +268,24 @@ function getAllShipments() {
   );
 }
 function getUserShipments(user) {
-  return getAllShipments().filter(shipment => {
-    if (user?.id && shipment.userId) return shipment.userId === user.id;
-    return (shipment.customerEmail || '').toLowerCase() === (user?.email || '').toLowerCase();
-  });
+  return getAllShipments().filter(
+    s => (s.customerEmail || '').toLowerCase() === user.email.toLowerCase()
+  );
 }
 
 function normalizeShipment(row) {
   if (!row) return null;
   const meta = parseShipmentMeta(row);
-  const history = extractShipmentHistory(row, meta);
-  const movementPlan = normalizeMovementPlan(row.movementPlan || row.movement_plan || meta.movementPlan || []);
+  let history = row.history ?? meta.history ?? [];
+  if (typeof history === 'string') {
+    try { history = JSON.parse(history); } catch (error) {
+      logDataError('Failed to parse shipment history.', error, history);
+      history = [];
+    }
+  }
   return {
     id: row.id || meta.id || vsUid('shp'),
     trackingCode: row.trackingCode || row.tracking_code || meta.trackingCode || '',
-    userId: row.userId || row.user_id || meta.userId || '',
     customerEmail: row.customerEmail || row.customer_email || row.email || meta.customerEmail || '',
     customerName: row.customerName || row.customer_name || row.full_name || meta.customerName || '',
     phone: row.phone || meta.phone || '',
@@ -349,37 +298,22 @@ function normalizeShipment(row) {
     valueUsd: Number(row.valueUsd ?? row.value_usd ?? meta.valueUsd ?? 0),
     origin: row.origin || meta.origin || '—',
     destination: row.destination || meta.destination || '—',
-    currentLocation: row.currentLocation || row.current_location || meta.currentLocation || movementPlan[0]?.location || row.origin || 'Origin hub',
+    currentLocation: row.currentLocation || row.current_location || meta.currentLocation || row.origin || 'Origin hub',
     shippingMode: row.shippingMode || row.shipping_mode || meta.shippingMode || 'Express',
     priority: row.priority || meta.priority || 'Priority',
-    status: normalizeStatusValue(row.status || row.Status || meta.status || 'processing'),
-    statusControl: row.statusControl || row.status_control || meta.statusControl || 'active',
+    status: row.status || row.Status || meta.status || 'processing',
     pausedReason: row.pausedReason || row.paused_reason || meta.pausedReason || '',
-    resumeReason: row.resumeReason || row.resume_reason || meta.resumeReason || '',
-    pauseState: Boolean(row.pauseState ?? meta.pauseState ?? ((row.statusControl || row.status_control || meta.statusControl || 'active') === 'paused' || normalizeStatusValue(row.status || row.Status || meta.status || '') === 'paused')),
-    pausedAt: row.pausedAt || row.pause_started_at || meta.pausedAt || null,
     pausedProgress: row.pausedProgress ?? row.paused_progress ?? meta.pausedProgress ?? null,
     departureTime: row.departureTime || row.departure_time || meta.departureTime || null,
     estimatedArrival: row.estimatedArrival || row.estimated_arrival || row.estimated_delivery || meta.estimatedArrival || null,
-    deliveryDeadline: row.deliveryDeadline || row.delivery_deadline || meta.deliveryDeadline || row.estimated_delivery || null,
     createdAt: row.createdAt || row.created_at || meta.createdAt || new Date().toISOString(),
-    updatedAt: row.updatedAt || row.updated_at || meta.updatedAt || new Date().toISOString(),
     notes: row.notes || meta.notes || '',
     confirmedByCustomer: Boolean(row.confirmedByCustomer ?? row.confirmed_by_customer ?? meta.confirmedByCustomer),
-    deleted: Boolean(row.deleted ?? meta.deleted ?? (normalizeStatusValue(row.status || row.Status || meta.status) === 'deleted')),
+    deleted: Boolean(row.deleted ?? meta.deleted ?? ((row.status || row.Status || meta.status || '').toString().toLowerCase() === 'deleted')),
     deletedAt: row.deleted_at || meta.deletedAt || null,
-    currentStep: Number(row.currentStep ?? row.current_step ?? meta.currentStep ?? 0),
-    currentEventIndex: Number(row.currentEventIndex ?? row.current_event_index ?? meta.currentEventIndex ?? (history.length ? history.length - 1 : 0)),
-    totalSteps: Number(row.totalSteps ?? row.total_steps ?? meta.totalSteps ?? movementPlan.length ?? 0),
-    totalEvents: Number(row.totalEvents ?? row.total_events ?? meta.totalEvents ?? movementPlan.length ?? 0),
-    nextMovementAt: row.nextMovementAt || row.next_movement_at || meta.nextMovementAt || null,
-    nextSimulationAt: row.nextSimulationAt || row.next_simulation_at || meta.nextSimulationAt || null,
-    stepIntervalHours: Number(row.stepIntervalHours ?? row.movement_step_interval_hours ?? meta.stepIntervalHours ?? 0),
-    movementPlan,
     history: Array.isArray(history) ? history : []
   };
 }
-
 
 function mergeShipmentIntoCache(shipment) {
   const n = normalizeShipment(shipment);
@@ -393,46 +327,35 @@ function mergeShipmentIntoCache(shipment) {
 
 /* ── Progress ── */
 function computeShipmentProgress(shipment) {
-  if (!shipment) return 0;
   if (shipment.status === 'delivered' || shipment.status === 'deleted') return 100;
-
-  const plan = Array.isArray(shipment.movementPlan) ? shipment.movementPlan : [];
-  const totalSteps = Math.max(plan.length - 1, Number(shipment.totalEvents || shipment.totalSteps || 0) - 1, 1);
-  const currentIndex = clamp(Number(shipment.currentEventIndex ?? shipment.currentStep ?? 0), 0, totalSteps);
-  const discreteProgress = (currentIndex / totalSteps) * 100;
-
-  if (shipment.status === 'paused' && shipment.pausedProgress != null) {
-    return clamp(shipment.pausedProgress, 0, 100);
-  }
-
-  return clamp(discreteProgress || getStatusMeta(shipment.status).progress, 0, 100);
+  if (shipment.status === 'paused' && shipment.pausedProgress != null)
+    return clamp(shipment.pausedProgress, 8, 96);
+  const stageP = getStatusMeta(shipment.status).progress;
+  const start  = new Date(shipment.departureTime || shipment.createdAt).getTime();
+  const end    = new Date(shipment.estimatedArrival).getTime();
+  if (!start || !end || end <= start) return clamp(stageP, 8, 96);
+  const ratio   = clamp((Date.now() - start) / (end - start), 0, 1);
+  const timeP   = 10 + ratio * 86;
+  if (shipment.status === 'processing')       return clamp(Math.min(timeP, 22), 10, 22);
+  if (shipment.status === 'confirmed')        return clamp(Math.min(timeP, 35), 18, 35);
+  if (shipment.status === 'in_transit')       return clamp(Math.max(timeP, 42), 42, 76);
+  if (shipment.status === 'customs')          return clamp(Math.max(timeP, 68), 68, 85);
+  if (shipment.status === 'out_for_delivery') return clamp(Math.max(timeP, 86), 86, 98);
+  return clamp(Math.max(stageP, timeP), 8, 96);
 }
-
-function isShipmentMotionActive(shipment) {
-  return Boolean(
-    shipment
-    && shipment.statusControl !== 'paused'
-    && !['paused', 'delivered', 'deleted'].includes(shipment.status)
-  );
-}
-
 
 /* ── ETA countdown ── */
 function calcEtaBreakdown(iso) {
   if (!iso) return { text: 'ETA pending', expired: false };
   const diff = new Date(iso).getTime() - Date.now();
-  if (diff <= 0) return { text: 'Arriving now', expired: true };
+  if (diff <= 0) return { text: 'Arrived', expired: true };
   const d = Math.floor(diff / 86400000);
-  const h = Math.ceil((diff % 86400000) / 3600000);
-  return { text: `Arriving in ${d} day${d === 1 ? '' : 's'} ${h} hour${h === 1 ? '' : 's'}`, expired: false };
+  const h = Math.floor((diff % 86400000) / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  return { text: `${d}d ${h}h ${m}m ${s}s`, expired: false };
 }
 function calcEtaCountdown(iso) { return calcEtaBreakdown(iso).text; }
-function getShipmentEtaText(shipment) {
-  if (!shipment) return 'ETA pending';
-  if (shipment.status === 'delivered') return 'Delivered';
-  if (shipment.status === 'out_for_delivery') return 'Out for delivery';
-  return calcEtaCountdown(shipment.estimatedArrival);
-}
 
 /* ── Badges ── */
 function shipmentStatusBadge(status) {
@@ -458,10 +381,8 @@ function shipmentImage(shipment) {
 
 /* ── Shipment card markup ── */
 function shipmentCardMarkup(shipment, options = {}) {
-  const historyItems = shipment.history || [];
-  const latest   = historyItems[historyItems.length - 1];
+  const latest   = (shipment.history || [])[0];
   const paused   = shipment.status === 'paused' && shipment.pausedReason;
-  const resumed  = shipment.status !== 'paused' && shipment.resumeReason;
   const progress = computeShipmentProgress(shipment);
   const actionMarkup = options.showActions || '';
   const dept = shipment.departureTime ? formatDateTime(shipment.departureTime) : '—';
@@ -487,7 +408,7 @@ function shipmentCardMarkup(shipment, options = {}) {
               <div class="shipment-code"><i class="fa-solid fa-barcode"></i>${shipment.trackingCode}</div>
             </div>
             <div class="stack shipment-top-actions">
-              <div class="timer-pill eta-live" data-shipment-eta="${shipment.id}">${getShipmentEtaText(shipment)}</div>
+              <div class="timer-pill eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</div>
               <button class="btn btn-secondary btn-sm" data-view-shipment="${shipment.id}">Open live view</button>
             </div>
           </div>
@@ -502,13 +423,12 @@ function shipmentCardMarkup(shipment, options = {}) {
           <div class="shipment-meta-grid">
             <div><label>Current location</label><strong>${shipment.currentLocation || '—'}</strong></div>
             <div><label>Takeoff</label><strong>${dept}</strong></div>
-            <div><label>ETA</label><strong class="eta-live" data-shipment-eta="${shipment.id}">${getShipmentEtaText(shipment)}</strong></div>
+            <div><label>ETA</label><strong class="eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</strong></div>
             <div><label>Priority</label><strong>${shipment.priority}</strong></div>
           </div>
           ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
           ${paused ? `<div class="status-banner"><i class="fa-solid fa-circle-pause"></i><div><strong>Movement paused</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
-          ${!paused && resumed ? `<div class="status-banner"><i class="fa-solid fa-circle-play"></i><div><strong>Movement resumed</strong><p>${shipment.resumeReason}</p></div></div>` : ''}
-          ${latest ? `<div class="timeline compact-timeline"><div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-body"><strong><span>${formatDateTime(latest.time)} — ${latest.location}</span><span>${latest.title}</span></strong><span>Status: ${getStatusMeta(latest.status).label}${latest.note || latest.detail ? ` · Note: ${latest.note || latest.detail}` : ''}</span></div></div></div>` : ''}
+          ${latest ? `<div class="timeline compact-timeline"><div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-body"><strong><span>${latest.title}</span><span>${formatDateTime(latest.time)}</span></strong><span>${latest.location} · ${latest.detail}</span></div></div></div>` : ''}
           ${actionMarkup}
         </div>
       </div>
@@ -534,8 +454,8 @@ function shipmentDetailMarkup(shipment) {
     <div class="timeline-item">
       <div class="timeline-dot ${e.status === 'delivered' ? 'success' : e.status === 'paused' ? 'danger' : ''}"></div>
       <div class="timeline-body">
-        <strong><span>${formatDateTime(e.time)} — ${e.location}</span><span>${getStatusMeta(e.status).label}</span></strong>
-        <span>Status: ${getStatusMeta(e.status).label}${e.note || e.detail ? ` · Note: ${e.note || e.detail}` : ''}</span>
+        <strong><span>${e.title}</span><span>${formatDateTime(e.time)}</span></strong>
+        <span>${e.location} · ${e.detail}</span>
       </div>
     </div>`).join('') || '<p class="muted">No movement events yet.</p>';
 
@@ -562,7 +482,7 @@ function shipmentDetailMarkup(shipment) {
         </div>
         <div class="flight-node right">
           <div class="flight-label">Arrival</div>
-          <div class="flight-value eta-live" data-shipment-eta="${shipment.id}">${getShipmentEtaText(shipment)}</div>
+          <div class="flight-value eta-live" data-eta="${shipment.estimatedArrival}">${calcEtaCountdown(shipment.estimatedArrival)}</div>
           <div class="flight-place">${shipment.destination}</div>
         </div>
       </div>
@@ -578,8 +498,7 @@ function shipmentDetailMarkup(shipment) {
         <div><label>Created</label><strong>${formatDateTime(shipment.createdAt)}</strong></div>
       </div>
       ${shipment.status === 'deleted' ? `<div class="status-banner"><i class="fa-solid fa-trash-can"></i><div><strong>Shipment deleted</strong><p>Shipment has been deleted</p></div></div>` : ''}
-      ${shipment.status === 'paused' && shipment.pausedReason ? `<div class="status-banner"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Delay notice</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
-      ${shipment.status !== 'paused' && shipment.resumeReason ? `<div class="status-banner"><i class="fa-solid fa-circle-play"></i><div><strong>Movement resumed</strong><p>${shipment.resumeReason}</p></div></div>` : ''}
+      ${shipment.pausedReason ? `<div class="status-banner"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Delay notice</strong><p>${shipment.pausedReason}</p></div></div>` : ''}
       <div class="stack"><h4 class="timeline-heading"><i class="fa-solid fa-route"></i> Delivery Movement Timeline</h4>
         <div class="timeline">${historyHtml}</div>
       </div>
@@ -593,14 +512,14 @@ function findShipmentByCode(code) {
   ) || null;
 }
 
-async function fetchShipmentByCode(code, options = {}) {
+async function fetchShipmentByCode(code) {
   const c = (code || '').trim().toUpperCase();
   if (!c) throw new Error('Tracking code is required.');
   const cached = findShipmentByCode(c);
-  if (cached && !options.force) return cached;
+  if (cached) return cached;
   if (window.__veloxshipRuntime.dbReady) {
     try {
-      const data = await apiFetch(`/shipments/lookup/${encodeURIComponent(c)}`);
+      const data = await apiFetch(`/track/${encodeURIComponent(c)}`);
       return mergeShipmentIntoCache(data.shipment);
     } catch (error) {
       logDataError('Server tracking lookup failed.', error);
@@ -746,7 +665,7 @@ function generateTrackingCode(existing = []) {
 
 function appendHistory(shipment, entry) {
   shipment.history = shipment.history || [];
-  shipment.history.push({ id: vsUid('evt'), time: new Date().toISOString(), ...entry });
+  shipment.history.unshift({ id: vsUid('evt'), time: new Date().toISOString(), ...entry });
 }
 
 async function ensureShipmentsLoaded(force = false) {
@@ -765,7 +684,7 @@ async function ensureShipmentsLoaded(force = false) {
       const u    = getCurrentUser();
       const data = ctx === 'admin'
         ? await apiFetch('/shipments', { headers: buildAdminHeaders() })
-        : await apiFetch('/shipments/mine', { headers: { 'x-customer-email': u?.email || '', 'x-customer-user-id': u?.id || '' } });
+        : await apiFetch('/shipments/mine', { headers: { 'x-customer-email': u?.email || '' } });
       const shipments = (data.shipments || []).map(normalizeShipment).filter(Boolean);
       window.__veloxshipCache.shipments = shipments;
       window.__veloxshipCache.mode = 'cloud';
@@ -862,7 +781,6 @@ async function createShipment(payload) {
           trackingCode: shipment.trackingCode,
           customerName: shipment.customerName,
           customerEmail: shipment.customerEmail,
-          customerUserId: payload.customerUserId || payload.userId || '',
           productName: shipment.productName,
           productCategory: shipment.productCategory,
           productDescription: shipment.productDescription,
@@ -908,20 +826,12 @@ async function updateShipment(id, updates) {
   Object.assign(next, updates);
 
   if (updates.status === 'paused') {
-    next.pauseState = true;
     next.pausedProgress = priorP;
-    next.resumeReason = '';
     next.pausedReason   = updates.pausedReason || next.pausedReason || 'Movement paused by operations.';
   }
   if (prev === 'paused' && updates.status && updates.status !== 'paused') {
-    next.pauseState = false;
     next.pausedProgress = null;
-    next.resumeReason = updates.resumeReason || next.resumeReason || '';
     if (!updates.pausedReason) next.pausedReason = '';
-  }
-  if (updates.resumeReason && updates.status !== 'paused') {
-    next.resumeReason = updates.resumeReason;
-    next.pauseState = false;
   }
 
   if (updates.status && updates.status !== prev) {
@@ -951,7 +861,6 @@ async function updateShipment(id, updates) {
           estimatedArrival: next.estimatedArrival,
           departureTime: next.departureTime,
           pausedReason: next.pausedReason,
-          resumeReason: next.resumeReason,
           notes: next.notes,
           history: next.history
         })
@@ -1013,7 +922,6 @@ async function claimTrackingCode(user, code) {
         body: JSON.stringify({
           claimTracking: true,
           customerEmail: next.customerEmail,
-          customerUserId: user?.id || '',
           customerName: next.customerName,
           confirmedByCustomer: true,
           history: next.history
@@ -1050,81 +958,25 @@ function showToast(message, tone = 'info') {
 }
 
 /* ── Live telemetry ── */
-function ensureBlinkAddressMarker(marker) {
-  if (!marker) return null;
-  marker.style.position = 'absolute';
-  marker.style.left = 'calc(var(--progress, 0%) - 10px)';
-  marker.style.zIndex = '2';
-  marker.style.transition = 'left .8s ease';
-
-  let addressMarker = marker.querySelector('.vs-address-marker');
-  if (!addressMarker) {
-    addressMarker = document.createElement('span');
-    addressMarker.className = 'vs-address-marker';
-    addressMarker.setAttribute('aria-hidden', 'true');
-    addressMarker.innerHTML = '<i class="fa-solid fa-location-dot"></i>';
-    addressMarker.style.position = 'absolute';
-    addressMarker.style.left = '50%';
-    addressMarker.style.top = '-18px';
-    addressMarker.style.transform = 'translateX(-50%)';
-    addressMarker.style.fontSize = '0.72rem';
-    addressMarker.style.lineHeight = '1';
-    addressMarker.style.color = '#ef4444';
-    addressMarker.style.pointerEvents = 'none';
-    addressMarker.style.transition = 'opacity .2s ease, transform .2s ease';
-    marker.appendChild(addressMarker);
-  }
-  return addressMarker;
-}
-
-function syncLaneMotion(lane, shipment) {
-  const progress = computeShipmentProgress(shipment);
-  lane.style.setProperty('--progress', `${progress}%`);
-  const bar = lane.closest('.shipment-progress-wrap')?.querySelector('.shipment-progress > span');
-  if (bar) bar.style.width = `${progress}%`;
-
-  const marker = lane.querySelector('.truck-marker');
-  if (!marker) return;
-
-  const addressMarker = ensureBlinkAddressMarker(marker);
-  const active = isShipmentMotionActive(shipment);
-  const phaseOn = Math.floor(Date.now() / 800) % 2 === 0;
-
-  marker.style.opacity = '1';
-  marker.style.filter = active ? 'drop-shadow(0 0 8px rgba(37,99,235,.35))' : 'none';
-  marker.style.transform = 'translateY(0)';
-  marker.title = `${shipment.currentLocation || 'Current location'} · ${getStatusMeta(shipment.status).label}`;
-  marker.dataset.location = shipment.currentLocation || '';
-  marker.dataset.status = shipment.status || '';
-
-  if (addressMarker) {
-    addressMarker.style.opacity = active ? (phaseOn ? '1' : '0.22') : '0';
-    addressMarker.style.transform = active
-      ? `translateX(-50%) translateY(${phaseOn ? '-1px' : '1px'})`
-      : 'translateX(-50%) translateY(0)';
-  }
-}
-
 function refreshLiveTelemetry(scope = document) {
-  scope.querySelectorAll('[data-shipment-eta]').forEach(node => {
-    const shipment = getAllShipments().find(item => String(item.id) === String(node.dataset.shipmentEta));
-    if (!shipment) return;
-    node.textContent = getShipmentEtaText(shipment);
+  scope.querySelectorAll('[data-eta]').forEach(n => {
+    n.textContent = calcEtaCountdown(n.dataset.eta);
   });
-
-  scope.querySelectorAll('[data-progress-shipment]').forEach(lane => {
-    const shipment = getAllShipments().find(item => String(item.id) === String(lane.dataset.progressShipment));
-    if (!shipment) return;
-    syncLaneMotion(lane, shipment);
+  scope.querySelectorAll('[data-progress-shipment]').forEach(n => {
+    const s = getAllShipments().find(s => s.id === n.dataset.progressShipment);
+    if (!s) return;
+    const p = computeShipmentProgress(s);
+    n.style.setProperty('--progress', `${p}%`);
+    const bar = n.closest('.shipment-progress-wrap')?.querySelector('.shipment-progress > span');
+    if (bar) bar.style.width = `${p}%`;
   });
-
   const el = document.getElementById('elapsedDisplay');
   if (el) {
     const shipId = el.closest('[data-shipment-id]')?.dataset?.shipmentId;
     if (!shipId) return;
-    const shipment = getAllShipments().find(item => String(item.id) === String(shipId));
-    if (!shipment || !shipment.departureTime) return;
-    const diff = Date.now() - new Date(shipment.departureTime).getTime();
+    const s = getAllShipments().find(s => s.id === shipId);
+    if (!s || !s.departureTime) return;
+    const diff = Date.now() - new Date(s.departureTime).getTime();
     if (diff < 0) { el.textContent = 'Not yet departed'; return; }
     const d = Math.floor(diff / 86400000);
     const h = Math.floor((diff % 86400000) / 3600000);
@@ -1132,24 +984,10 @@ function refreshLiveTelemetry(scope = document) {
     el.textContent = `${d}d ${h}h ${m}m in transit`;
   }
 }
-
-function refreshOpenShipmentModal() {
-  const modal = document.getElementById('shipmentModal');
-  const content = document.getElementById('shipmentModalBody');
-  if (!modal || !content || !modal.classList.contains('active')) return;
-  const shipmentId = String(content.dataset.shipmentId || '').trim();
-  if (!shipmentId) return;
-  const shipment = getAllShipments().find(item => String(item.id) === shipmentId);
-  if (!shipment) return;
-  content.innerHTML = shipmentDetailMarkup(shipment);
-  content.setAttribute('data-shipment-id', shipment.id);
-  refreshLiveTelemetry(content);
-}
-
 function startLiveTelemetry() {
   refreshLiveTelemetry();
   clearInterval(window.__vsTelemetry);
-  window.__vsTelemetry = setInterval(refreshLiveTelemetry, 800);
+  window.__vsTelemetry = setInterval(refreshLiveTelemetry, 1000);
 }
 
 function getDataModeLabel() {
@@ -1220,10 +1058,7 @@ window.getStatusMeta      = getStatusMeta;
 window.getDataModeLabel   = getDataModeLabel;
 window.computeShipmentProgress = computeShipmentProgress;
 window.calcEtaCountdown   = calcEtaCountdown;
-window.getShipmentEtaText = getShipmentEtaText;
 window.refreshLiveTelemetry = refreshLiveTelemetry;
-window.vsApiFetch         = apiFetch;
-window.buildAdminHeaders  = buildAdminHeaders;
 
 /* ── Boot ── */
 function loadSupabaseIntegration() {
@@ -1248,94 +1083,6 @@ function loadSupabaseIntegration() {
   return window.__veloxshipSupabaseLoader;
 }
 
-let realtimeSocket = null;
-let realtimeReconnectTimer = null;
-let fallbackRefreshTimer = null;
-let realtimeChannel = null;
-
-function dispatchShipmentRefresh() {
-  window.dispatchEvent(new CustomEvent('veloxship:shipments-updated'));
-}
-
-async function refreshShipmentsLive() {
-  const page = document.body?.dataset?.page || '';
-  if (!['admin', 'dashboard'].includes(page)) return;
-  try {
-    await ensureShipmentsLoaded(true);
-    dispatchShipmentRefresh();
-  } catch (error) {
-    logDataError('Live shipment refresh failed.', error);
-  }
-}
-
-function scheduleRealtimeReconnect() {
-  clearTimeout(realtimeReconnectTimer);
-  realtimeReconnectTimer = setTimeout(startRealtimeSync, 3000);
-}
-
-async function startSupabaseRealtimeSync() {
-  const page = document.body?.dataset?.page || '';
-  const user = getCurrentUser();
-  if (!['admin', 'dashboard'].includes(page) || !user) return;
-
-  try {
-    const client = await ensureBrowserSupabase();
-    if (!client) return;
-
-    if (realtimeChannel?.unsubscribe) {
-      try { await realtimeChannel.unsubscribe(); } catch {}
-    }
-
-    realtimeChannel = client
-      .channel(`veloxship-live-${user.role}-${user.id || user.email || 'session'}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: window.__veloxshipRuntime.table || VS_SUPABASE_TABLE }, refreshShipmentsLive)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'movement_history' }, refreshShipmentsLive);
-
-    realtimeChannel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') refreshShipmentsLive();
-    });
-  } catch (error) {
-    logDataError('Supabase realtime init failed.', error);
-  }
-}
-
-function startRealtimeSync() {
-  const page = document.body?.dataset?.page || '';
-  const user = getCurrentUser();
-  const isPrivatePage = ['admin', 'dashboard'].includes(page);
-  if (isPrivatePage && !user) return;
-  clearInterval(fallbackRefreshTimer);
-  if (isPrivatePage) fallbackRefreshTimer = setInterval(refreshShipmentsLive, 7000);
-  if (isPrivatePage) startSupabaseRealtimeSync();
-  try {
-    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const query = new URLSearchParams({
-      role: user?.role || 'public',
-      email: user?.email || '',
-      userId: user?.id || '',
-      token: user?.adminToken || ''
-    });
-    realtimeSocket?.close();
-    realtimeSocket = new WebSocket(`${protocol}://${location.host}${window.__veloxshipRuntime.wsPath || '/ws'}?${query.toString()}`);
-    realtimeSocket.addEventListener('message', event => {
-      try {
-        const payload = JSON.parse(event.data || '{}');
-        if (payload.type === 'refresh') {
-          if (isPrivatePage) refreshShipmentsLive();
-          else dispatchShipmentRefresh();
-        }
-      } catch {}
-    });
-    realtimeSocket.addEventListener('close', scheduleRealtimeReconnect);
-    realtimeSocket.addEventListener('error', () => {
-      try { realtimeSocket.close(); } catch {}
-    });
-  } catch (error) {
-    logDataError('Realtime sync init failed.', error);
-  }
-}
-
-
 window.vsReady = loadSupabaseIntegration()
   .then(() => loadRuntimeConfig())
   .then(() => ensureShipmentsLoaded());
@@ -1344,6 +1091,4 @@ document.addEventListener('DOMContentLoaded', async () => {
   readState();
   await window.vsReady;
   startLiveTelemetry();
-  startRealtimeSync();
-  window.addEventListener('veloxship:shipments-updated', refreshOpenShipmentModal);
 });

@@ -21,13 +21,43 @@ function setAdminAlert(message, tone = 'info') {
 
 function sendDashboardActionMessage(shipment, body, subject = 'Shipment update') {
   if (!shipment?.customerEmail) return;
-  sendMessage({ to: shipment.customerEmail, subject, body });
+  sendMessage({
+    to: shipment.customerEmail,
+    subject,
+    body
+  });
 }
 
 function ensureEditCustomerFields() {
-  return null;
+  const form = document.getElementById('editShipmentForm');
+  if (!form || form.querySelector('[data-customer-fields]')) return;
+  const historyGrid = form.querySelector('.form-grid:last-of-type');
+  if (!historyGrid) return;
+  historyGrid.insertAdjacentHTML('beforebegin', `
+    <div class="form-grid" data-customer-fields>
+      <div>
+        <label for="editCustomerName">Customer name</label>
+        <input id="editCustomerName" placeholder="Customer full name">
+      </div>
+      <div>
+        <label for="editCustomerEmail">Customer email</label>
+        <input id="editCustomerEmail" type="email" placeholder="customer@example.com">
+      </div>
+    </div>
+    <div class="form-grid" data-customer-fields>
+      <div>
+        <label for="editCustomerPhone">Customer phone</label>
+        <input id="editCustomerPhone" placeholder="Customer phone number">
+      </div>
+      <div>
+        <label for="editCustomerAddress">Customer address</label>
+        <input id="editCustomerAddress" placeholder="Customer delivery address">
+      </div>
+    </div>
+  `);
 }
 
+/* ── Stats ── */
 function renderAdminStats(shipments, users, requests) {
   const visibleShipments = shipments.filter(shipment => shipment.status !== 'deleted' && !shipment.deleted);
   const set = (id, value) => {
@@ -36,12 +66,13 @@ function renderAdminStats(shipments, users, requests) {
   };
   set('adminShipments', visibleShipments.length);
   set('adminCustomers', users.length);
-  set('adminPaused', visibleShipments.filter(shipment => shipment.status === 'paused' || shipment.statusControl === 'paused').length);
+  set('adminPaused', visibleShipments.filter(shipment => shipment.status === 'paused').length);
   set('adminDelivered', visibleShipments.filter(shipment => shipment.status === 'delivered').length);
   set('adminRequests', requests.filter(request => request.status === 'new').length);
   set('adminMessages', getAllMessages().length);
 }
 
+/* ── Customer dropdown ── */
 function populateCustomerOptions() {
   const select = document.getElementById('customerEmail');
   if (!select) return;
@@ -50,6 +81,7 @@ function populateCustomerOptions() {
     users.map(user => `<option value="${user.email}">${user.name} · ${user.email}</option>`).join('');
 }
 
+/* ── Shipments table ── */
 function renderShipmentTable() {
   const host = document.getElementById('shipmentTableHost');
   if (!host) return;
@@ -65,26 +97,23 @@ function renderShipmentTable() {
           <tr><th>Tracking</th><th>Customer</th><th>Product</th><th>Status</th><th>Location</th><th>ETA</th><th>Actions</th></tr>
         </thead>
         <tbody>
-          ${shipments.map(shipment => {
-            const isPaused = shipment.status === 'paused' || shipment.statusControl === 'paused';
-            return `
-              <tr>
-                <td><code>${shipment.trackingCode}</code></td>
-                <td><span>${shipment.customerName || '—'}</span><br><small>${shipment.customerEmail || 'Unassigned'}</small></td>
-                <td>${shipment.productName}</td>
-                <td>${shipmentStatusBadge(shipment.status)}</td>
-                <td>${shipment.currentLocation || '—'}</td>
-                <td>${getShipmentEtaText(shipment)}</td>
-                <td>
-                  <div class="table-actions">
-                    <button class="table-btn" data-open-edit="${shipment.id}">Update</button>
-                    <button class="table-btn warn" data-toggle-shipment="${shipment.id}">${isPaused ? 'Resume' : 'Pause'}</button>
-                    <button class="table-btn warn" data-copy-code="${shipment.trackingCode}">Copy code</button>
-                    <button class="table-btn danger" data-delete-shipment="${shipment.id}">Delete</button>
-                  </div>
-                </td>
-              </tr>`;
-          }).join('')}
+          ${shipments.map(shipment => `
+            <tr>
+              <td><code>${shipment.trackingCode}</code></td>
+              <td><span>${shipment.customerName || '—'}</span><br><small>${shipment.customerEmail || 'Unassigned'}</small></td>
+              <td>${shipment.productName}</td>
+              <td>${shipmentStatusBadge(shipment.status)}</td>
+              <td>${shipment.currentLocation || '—'}</td>
+              <td>${formatDateTime(shipment.estimatedArrival)}</td>
+              <td>
+                <div class="table-actions">
+                  <button class="table-btn" data-open-edit="${shipment.id}">Update</button>
+                  <button class="table-btn warn" data-pause-shipment="${shipment.id}">Pause</button>
+                  <button class="table-btn warn" data-copy-code="${shipment.trackingCode}">Copy code</button>
+                  <button class="table-btn danger" data-delete-shipment="${shipment.id}">Delete</button>
+                </div>
+              </td>
+            </tr>`).join('')}
         </tbody>
       </table>
     </div>`;
@@ -93,8 +122,8 @@ function renderShipmentTable() {
     button.addEventListener('click', () => openEditModal(button.dataset.openEdit));
   });
 
-  host.querySelectorAll('[data-toggle-shipment]').forEach(button => {
-    button.addEventListener('click', () => handleToggleShipment(button.dataset.toggleShipment));
+  host.querySelectorAll('[data-pause-shipment]').forEach(button => {
+    button.addEventListener('click', () => handlePauseShipment(button.dataset.pauseShipment));
   });
 
   host.querySelectorAll('[data-copy-code]').forEach(button => {
@@ -109,8 +138,7 @@ function renderShipmentTable() {
   });
 }
 
-
-async function handlePauseShipment(id, presetReason = '') {
+async function handlePauseShipment(id) {
   if (!hasAdminPrivileges()) {
     showToast('Admin access required.', 'error');
     return;
@@ -120,21 +148,20 @@ async function handlePauseShipment(id, presetReason = '') {
     showToast('Shipment not found.', 'error');
     return;
   }
-  const reason = presetReason || window.prompt('Enter pause reason', shipment.pausedReason || '');
+  const reason = window.prompt('Enter pause reason', shipment.pausedReason || '');
   if (reason === null) return;
-  const pauseReason = String(reason || '').trim();
+  const pauseReason = reason.trim();
   if (!pauseReason) {
     showToast('Pause reason is required.', 'warning');
     return;
   }
   try {
-    const result = await window.vsApiFetch(`/shipments/${id}/pause`, {
-      method: 'POST',
-      headers: buildAdminHeaders(),
-      body: JSON.stringify({ reason: pauseReason })
+    const updated = await updateShipment(id, {
+      status: 'paused',
+      pausedReason: pauseReason,
+      historyTitle: 'Shipment paused',
+      historyDetail: `Shipment paused: ${pauseReason}`
     });
-    const updated = result.shipment;
-    await ensureShipmentsLoaded(true);
     sendDashboardActionMessage(updated, `Shipment paused: ${pauseReason}`, 'Shipment paused');
     setAdminAlert('Shipment paused successfully.', 'success');
     showToast('Shipment paused.', 'success');
@@ -143,53 +170,6 @@ async function handlePauseShipment(id, presetReason = '') {
     showToast(error.message, 'error');
   }
 }
-
-async function handleResumeShipment(id, presetReason = '') {
-  if (!hasAdminPrivileges()) {
-    showToast('Admin access required.', 'error');
-    return;
-  }
-  const shipment = getAllShipments().find(item => String(item.id) === String(id));
-  if (!shipment) {
-    showToast('Shipment not found.', 'error');
-    return;
-  }
-  const reason = presetReason || window.prompt('Enter resume reason', shipment.resumeReason || '');
-  if (reason === null) return;
-  const resumeReason = String(reason || '').trim();
-  if (!resumeReason) {
-    showToast('Resume reason is required.', 'warning');
-    return;
-  }
-  try {
-    const result = await window.vsApiFetch(`/shipments/${id}/resume`, {
-      method: 'POST',
-      headers: buildAdminHeaders(),
-      body: JSON.stringify({ reason: resumeReason })
-    });
-    const updated = result.shipment;
-    await ensureShipmentsLoaded(true);
-    sendDashboardActionMessage(updated, `Shipment movement resumed: ${resumeReason}`, 'Shipment resumed');
-    setAdminAlert('Shipment resumed successfully.', 'success');
-    showToast('Shipment resumed.', 'success');
-    refreshAdmin();
-  } catch (error) {
-    showToast(error.message, 'error');
-  }
-}
-
-async function handleToggleShipment(id) {
-  const shipment = getAllShipments().find(item => String(item.id) === String(id));
-  if (!shipment) {
-    showToast('Shipment not found.', 'error');
-    return;
-  }
-  if (shipment.status === 'paused' || shipment.statusControl === 'paused') {
-    return handleResumeShipment(id);
-  }
-  return handlePauseShipment(id);
-}
-
 
 async function handleDeleteShipment(id) {
   if (!hasAdminPrivileges()) {
@@ -219,6 +199,7 @@ async function handleDeleteShipment(id) {
   }
 }
 
+/* ── Users table ── */
 function renderUserTable() {
   const host = document.getElementById('userTableHost');
   if (!host) return;
@@ -248,6 +229,7 @@ function renderUserTable() {
     </div>`;
 }
 
+/* ── Requests table ── */
 function renderRequestTable() {
   const host = document.getElementById('requestTableHost');
   if (!host) return;
@@ -289,6 +271,7 @@ function renderRequestTable() {
     }));
 }
 
+/* ── Messages panel ── */
 function renderAdminMessages() {
   const host = document.getElementById('adminMessagesHost');
   if (!host) return;
@@ -314,6 +297,7 @@ function renderAdminMessages() {
     </div>`;
 }
 
+/* ── Use request in form ── */
 function useRequestInForm(requestId) {
   const request = getAllRequests().find(item => item.id === requestId);
   if (!request) return;
@@ -333,6 +317,7 @@ function useRequestInForm(requestId) {
   showToast('Request details loaded into shipment creator.', 'info');
 }
 
+/* ── Main refresh ── */
 function refreshAdmin() {
   const users = getAllUsers();
   const shipments = getAllShipments();
@@ -349,6 +334,7 @@ function refreshAdmin() {
   renderAdminMessages();
 }
 
+/* ── Create shipment form ── */
 function installCreateShipmentForm() {
   const form = document.getElementById('createShipmentForm');
   if (!form) return;
@@ -366,7 +352,6 @@ function installCreateShipmentForm() {
       const matchedUser = getAllUsers().find(user => user.email === emailValue);
       const shipment = await createShipment({
         customerEmail: emailValue,
-        customerUserId: matchedUser?.id || '',
         customerName: matchedUser?.name || document.getElementById('customerNameFallback').value,
         productName: document.getElementById('productName').value,
         productCategory: document.getElementById('productCategory').value,
@@ -397,140 +382,30 @@ function installCreateShipmentForm() {
   });
 }
 
-async function editCustomerShippingInfo(shipment) {
-  const fullName = window.prompt('Customer full name', shipment.customerName || '');
-  if (fullName === null) return;
-  const email = window.prompt('Customer email', shipment.customerEmail || '');
-  if (email === null) return;
-  const phone = window.prompt('Customer phone', shipment.phone || '');
-  if (phone === null) return;
-  const destination = window.prompt('Destination', shipment.destination || '');
-  if (destination === null) return;
-  const address = window.prompt('Address', shipment.address || '');
-  if (address === null) return;
-  const statusOverride = window.prompt('Shipment status override (optional)', getStatusMeta(shipment.status).label || '');
-  if (statusOverride === null) return;
-
-  await window.vsApiFetch(`/shipments/${shipment.id}/customer`, {
-    method: 'PATCH',
-    headers: buildAdminHeaders(),
-    body: JSON.stringify({
-      fullName: fullName.trim(),
-      email: email.trim().toLowerCase(),
-      phone: phone.trim(),
-      destination: destination.trim(),
-      address: address.trim(),
-      statusOverride: statusOverride.trim()
-    })
-  });
-
-  await ensureShipmentsLoaded(true);
-  setAdminAlert('Customer shipping info updated.', 'success');
-  showToast('Customer details updated.', 'success');
-  refreshAdmin();
-}
-
-async function manageTrackingHistory(shipment) {
-  const mode = (window.prompt('Tracking history action: add, edit, delete', 'add') || '').trim().toLowerCase();
-  if (!mode) return;
-  const result = await window.vsApiFetch(`/shipments/${shipment.id}/movements?limit=20`, {
-    headers: buildAdminHeaders()
-  });
-  const movements = result.movements || [];
-  const summary = movements.length
-    ? movements.map(item => `${item.id} | ${formatDateTime(item.time)} | ${item.location} | ${getStatusMeta(item.status).label}`).join('\n')
-    : 'No existing tracking updates yet.';
-
-  if (mode === 'add') {
-    const location = window.prompt('Tracking location (generic hub only)', shipment.currentLocation || 'Origin Facility');
-    if (location === null) return;
-    const status = window.prompt('Tracking status', getStatusMeta(shipment.status).label || 'Processing');
-    if (status === null) return;
-    const note = window.prompt('Optional note', shipment.notes || '');
-    if (note === null) return;
-    await window.vsApiFetch(`/shipments/${shipment.id}/movements`, {
-      method: 'POST',
-      headers: buildAdminHeaders(),
-      body: JSON.stringify({ location: location.trim(), status: status.trim(), note: note.trim() })
-    });
-    await ensureShipmentsLoaded(true);
-    showToast('Tracking update added.', 'success');
-    refreshAdmin();
-    return;
-  }
-
-  const movementId = window.prompt(`${summary}\n\nEnter tracking update ID`, movements[0]?.id || '');
-  if (movementId === null || !movementId.trim()) return;
-  const selected = movements.find(item => String(item.id) === String(movementId).trim());
-  if (!selected) {
-    showToast('Tracking update not found.', 'error');
-    return;
-  }
-
-  if (mode === 'edit') {
-    const location = window.prompt('Edit location', selected.location || '');
-    if (location === null) return;
-    const status = window.prompt('Edit status', getStatusMeta(selected.status).label || 'Processing');
-    if (status === null) return;
-    const note = window.prompt('Edit note', selected.note || selected.detail || '');
-    if (note === null) return;
-    await window.vsApiFetch(`/shipments/${shipment.id}/movements/${selected.id}`, {
-      method: 'PATCH',
-      headers: buildAdminHeaders(),
-      body: JSON.stringify({ location: location.trim(), status: status.trim(), note: note.trim() })
-    });
-    await ensureShipmentsLoaded(true);
-    showToast('Tracking update edited.', 'success');
-    refreshAdmin();
-    return;
-  }
-
-  if (mode === 'delete') {
-    if (!window.confirm(`Delete tracking update ${selected.id}?`)) return;
-    await window.vsApiFetch(`/shipments/${shipment.id}/movements/${selected.id}`, {
-      method: 'DELETE',
-      headers: buildAdminHeaders()
-    });
-    await ensureShipmentsLoaded(true);
-    showToast('Tracking update deleted.', 'success');
-    refreshAdmin();
-    return;
-  }
-
-  showToast('Unknown action. Use add, edit, or delete.', 'warning');
-}
-
+/* ── Edit modal ── */
 function openEditModal(id) {
   editingShipmentId = id;
+  ensureEditCustomerFields();
   const shipment = getAllShipments().find(item => String(item.id) === String(id));
   if (!shipment) return;
-  const mode = (window.prompt('Choose action: shipment, customer, tracking', 'shipment') || 'shipment').trim().toLowerCase();
-  if (!mode || mode === 'shipment') {
-    const set = (elId, value) => {
-      const el = document.getElementById(elId);
-      if (el) el.value = value || '';
-    };
-    const codeEl = document.getElementById('editShipmentCode');
-    if (codeEl) codeEl.textContent = shipment.trackingCode;
-    set('editStatus', shipment.status);
-    set('editLocation', shipment.currentLocation);
-    set('editEta', shipment.estimatedArrival ? shipment.estimatedArrival.slice(0, 16) : '');
-    set('editDepartureTime', shipment.departureTime ? shipment.departureTime.slice(0, 16) : '');
-    set('editPauseReason', shipment.pausedReason);
-    set('editHistoryTitle', '');
-    set('editHistoryDetail', '');
-    document.getElementById('editModal')?.classList.add('active');
-    return;
-  }
-  if (mode === 'customer') {
-    editCustomerShippingInfo(shipment).catch(error => showToast(error.message, 'error'));
-    return;
-  }
-  if (mode === 'tracking') {
-    manageTrackingHistory(shipment).catch(error => showToast(error.message, 'error'));
-    return;
-  }
-  showToast('Unknown action. Use shipment, customer, or tracking.', 'warning');
+  const set = (elId, value) => {
+    const el = document.getElementById(elId);
+    if (el) el.value = value || '';
+  };
+  const codeEl = document.getElementById('editShipmentCode');
+  if (codeEl) codeEl.textContent = shipment.trackingCode;
+  set('editStatus', shipment.status);
+  set('editLocation', shipment.currentLocation);
+  set('editEta', shipment.estimatedArrival ? shipment.estimatedArrival.slice(0, 16) : '');
+  set('editDepartureTime', shipment.departureTime ? shipment.departureTime.slice(0, 16) : '');
+  set('editPauseReason', shipment.pausedReason);
+  set('editCustomerName', shipment.customerName);
+  set('editCustomerEmail', shipment.customerEmail);
+  set('editCustomerPhone', shipment.phone);
+  set('editCustomerAddress', shipment.address);
+  set('editHistoryTitle', '');
+  set('editHistoryDetail', '');
+  document.getElementById('editModal')?.classList.add('active');
 }
 
 function installEditForm() {
@@ -543,51 +418,31 @@ function installEditForm() {
       return;
     }
     if (!editingShipmentId) return;
-    const shipment = getAllShipments().find(item => String(item.id) === String(editingShipmentId));
-    if (!shipment) return;
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
     button.textContent = 'Saving…';
     try {
       const status = document.getElementById('editStatus').value;
       const pauseReason = document.getElementById('editPauseReason').value.trim();
-
-      if (status === 'paused') {
-        if (!pauseReason) throw new Error('Pause reason is required when pausing a shipment.');
-        await handlePauseShipment(editingShipmentId, pauseReason);
-        document.getElementById('editModal')?.classList.remove('active');
-        return;
-      }
-
-      let resumeReason = '';
-      if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
-        const resumeInput = window.prompt('Enter resume reason', shipment.resumeReason || '');
-        if (resumeInput === null) return;
-        resumeReason = String(resumeInput || '').trim();
-        if (!resumeReason) throw new Error('Resume reason is required when resuming a shipment.');
-        await window.vsApiFetch(`/shipments/${editingShipmentId}/resume`, {
-          method: 'POST',
-          headers: buildAdminHeaders(),
-          body: JSON.stringify({ reason: resumeReason })
-        });
-      }
-
       const payload = {
         status,
         currentLocation: document.getElementById('editLocation').value,
         estimatedArrival: document.getElementById('editEta').value || null,
         departureTime: document.getElementById('editDepartureTime')?.value || null,
-        pausedReason: '',
-        resumeReason,
+        pausedReason: pauseReason,
+        customerName: document.getElementById('editCustomerName')?.value.trim() || '',
+        customerEmail: document.getElementById('editCustomerEmail')?.value.trim().toLowerCase() || '',
+        phone: document.getElementById('editCustomerPhone')?.value.trim() || '',
+        address: document.getElementById('editCustomerAddress')?.value.trim() || '',
         historyTitle: document.getElementById('editHistoryTitle').value || undefined,
         historyDetail: document.getElementById('editHistoryDetail').value || undefined
       };
 
-      if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
-        if (!payload.historyTitle) payload.historyTitle = 'In Transit';
-        if (!payload.historyDetail) payload.historyDetail = resumeReason;
+      if (status === 'paused') {
+        if (!pauseReason) throw new Error('Pause reason is required when pausing a shipment.');
+        if (!payload.historyTitle) payload.historyTitle = 'Shipment paused';
+        if (!payload.historyDetail) payload.historyDetail = `Shipment paused: ${pauseReason}`;
       }
-
       if (status === 'deleted') {
         payload.deleted = true;
         payload.deletedAt = new Date().toISOString();
@@ -596,8 +451,8 @@ function installEditForm() {
       }
 
       const updated = await updateShipment(editingShipmentId, payload);
-      if ((shipment.status === 'paused' || shipment.statusControl === 'paused') && status !== 'paused') {
-        sendDashboardActionMessage(updated, `Shipment movement resumed: ${resumeReason}`, 'Shipment resumed');
+      if (status === 'paused') {
+        sendDashboardActionMessage(updated, `Shipment paused: ${pauseReason}`, 'Shipment paused');
       }
       if (status === 'deleted') {
         sendDashboardActionMessage(updated, 'Shipment has been deleted', 'Shipment deleted');
@@ -605,7 +460,6 @@ function installEditForm() {
       document.getElementById('editModal')?.classList.remove('active');
       showToast('Shipment updated.', 'success');
       setAdminAlert('Shipment updated successfully.', 'success');
-      await ensureShipmentsLoaded(true);
       refreshAdmin();
     } catch (error) {
       showToast(error.message, 'error');
@@ -616,7 +470,7 @@ function installEditForm() {
   });
 }
 
-
+/* ── Send message form ── */
 function installMessageForm() {
   const form = document.getElementById('sendMessageForm');
   if (!form) return;
@@ -658,6 +512,7 @@ function installMessageForm() {
   });
 }
 
+/* ── Boot ── */
 document.addEventListener('DOMContentLoaded', async () => {
   await window.vsReady;
   adminUser = requireRole('admin');
@@ -666,11 +521,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   localStorage.setItem('role', 'admin');
   localStorage.setItem('isAdmin', 'true');
 
+  ensureEditCustomerFields();
   refreshAdmin();
   installCreateShipmentForm();
   installEditForm();
   installMessageForm();
-  window.addEventListener('veloxship:shipments-updated', refreshAdmin);
 
   document.querySelectorAll('[data-close-edit-modal]').forEach(button =>
     button.addEventListener('click', () => document.getElementById('editModal')?.classList.remove('active')));
